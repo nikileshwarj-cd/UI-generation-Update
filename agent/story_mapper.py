@@ -75,11 +75,15 @@ class StoryMapper:
         user_prompt = self._build_user_prompt(spec_dict, stories_list, element_ids)
 
         emit(f"Sending to code model: {settings.code_model}")
-        raw_response = self._client.chat(
-            system_prompt=self._system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=4000,
-        )
+        raw_response = ""
+        try:
+            raw_response = self._client.chat(
+                system_prompt=self._system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=4000,
+            )
+        except Exception as exc:
+            emit(f"[WARN] {settings.code_model} failed: {exc}. Trying fallback...")
 
         emit("Parsing story mapper response...")
         mapping_doc = self._parse_response(

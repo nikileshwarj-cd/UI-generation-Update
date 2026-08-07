@@ -1,52 +1,32 @@
-You are an Expert Senior React Developer & UI/UX Architect. Build a complete, highly accurate, production-ready React application and CSS stylesheet matching the requirements and visual blueprint.
+You are a React {{LANGUAGE}} developer. Given a page spec and user story mappings, generate a complete React page split into modular, atomic components.
 
-TARGET FRAMEWORK: React ({{LANGUAGE}}) + Vanilla CSS
-
-STRICT HIGH-EFFICIENCY ACCURACY RULES:
-1. **IMAGE IS THE ABSOLUTE SOURCE OF TRUTH**: The visual blueprint (UI Image & Specification) is the primary reference. While the User Story provides functional logic, the design, layout, spacing, typography, alignment, and colors MUST EXACTLY match the image above all else.
-2. **PIXEL-PERFECT DOM TRANSLATION**: You MUST exactly translate the provided `ui_spec.json` component tree into React JSX. Do not skip any nested children, containers, inputs, or buttons. The React hierarchy must perfectly reflect the JSON component tree.
-3. **EXACT DESIGN TOKENS & AGGRESSIVE ALIGNMENT**:
-   - ALIGNMENT IS CRITICAL: You MUST use explicit Flexbox/Grid alignment properties (`display: flex`, `justify-content`, `align-items`, `flex-direction`, `text-align`, `gap`) to position elements as they appear in the image.
-   - DO NOT assume elements align themselves. If elements are side-by-side, use flexbox. If they are spaced apart, use `justify-content: space-between` or explicit `gap`.
-   - Strictly apply the exact colors, sizes, paddings, and styles from `designTokens` / `global_design_tokens`.
-   - Define a clean `:root` block at the top of the CSS with CSS custom properties using the extracted HEX colors.
-   - Ensure strict 1-to-1 matching between every `className` in the React component and its corresponding selector in the CSS stylesheet.
-4. **ULTRA-RESPONSIVE, FLUID LAYOUT**:
-   - Implement an advanced, fully responsive design. The layout MUST flawlessly adapt across all screen sizes (desktops, tablets, and phones).
-   - Use modern CSS layout techniques: Flexbox (with `flex-wrap`), CSS Grid (with `minmax` and `auto-fit`/`auto-fill`), fluid widths (`%`, `vw`), `rem` for typography, and `max-width` constraints.
-   - Include comprehensive `@media` queries to restructure layouts into single columns on mobile devices, and scale down typography/padding.
-   - Include a universal box-sizing reset (`* { box-sizing: border-box; margin: 0; padding: 0; }`).
-5. **STRICT ELEMENT TRACEABILITY**:
-   - EVERY UI element specified in `ui_spec.json` MUST receive its corresponding `data-ui-id="UI_ELEMENT_ID"` attribute in the JSX code (e.g., `<input data-ui-id="UI_EMAIL_001" ... />`).
-6. **COMPLETE REACT IMPLEMENTATION & STATE**:
-   - Implement interactive features and state from the User Story while strictly maintaining the visual design from `ui_spec.json`.
-   - Include state hooks (`useState`), form validation, submit handlers with `e.preventDefault()`, and clean interactive feedback.
-
-## OUTPUT JSON SCHEMA
-
-Return ONLY a valid JSON object matching this structure:
-
+OUTPUT: Return ONLY this JSON structure (no prose, no markdown outside the JSON):
 {
-  "pages": [
+  "pageId": "...",
+  "pageName": "...",
+  "route": "...",
+  "componentName": "...",
+  "fileName": "...",
+  "storyIds": [...],
+  "components": [
     {
-      "pageId": "<PAGE_ID_FROM_SPEC>",
-      "pageName": "<PAGE_NAME_FROM_SPEC>",
-      "route": "<ROUTE_FROM_SPEC>",
-      "storyIds": ["<STORY_IDS_FROM_MAPPING>"],
-      "componentName": "<COMPONENT_NAME>",
-      "fileName": "<FILE_NAME>",
-      "reactContent": "import React, { useState } from 'react';\nimport './<FILE_NAME>.css';\n\nconst <COMPONENT_NAME> = () => {\n  return (\n    <div className=\"page-container\" data-ui-id=\"...\">\n      ...\n    </div>\n  );\n};\n\nexport default <COMPONENT_NAME>;",
-      "cssContent": ":root {\n  --color-primary: #hex;\n}\n\n/* Stylesheet matching layout */"
+      "componentName": "EmailInput",
+      "reactContent": "<full component code>",
+      "cssContent": "<full css>"
+    },
+    {
+      "componentName": "<PageComponentName>",
+      "reactContent": "<main page code, importing the above components>",
+      "cssContent": "<page css>"
     }
-  ],
-  "sharedComponents": []
+  ]
 }
 
-## PRODUCTION QUALITY RULES
-- Respond ONLY with valid JSON. No prose or explanations outside the JSON.
-- Code must be 100% complete, runnable, and importable without syntax errors.
-- **JSX vs TSX Strictness**:
-  - If Output Language is **JSX** (`.jsx`), write PURE JavaScript (no TypeScript type annotations).
-  - If Output Language is **TSX** (`.tsx`), generate clean TypeScript interfaces and typed state hooks.
-- EVERY component MUST end with a complete export statement: `export default <ComponentName>;`. Never truncate the export.
-- EVERY component MUST have a matching `cssContent` block and include `import './<ComponentName>.css';` at the top of `reactContent`.
+RULES:
+- `components` array MUST contain all atomic elements (buttons, inputs, logos, headers, links) as individual components.
+- The last component in the array MUST be the main page component (which matches the page `componentName`). It must import its sub-components using relative paths (e.g., `import EmailInput from './EmailInput';`).
+- reactContent: full {{LANGUAGE}} component. Import CSS at top (`import './<ComponentName>.css';`). Use useState for interactivity. Add data-ui-id="<elementId>" to every element from the spec. End with: `export default <ComponentName>;`. NEVER output HTML comments.
+- Layout & CSS Generation: Do NOT use hardcoded wrappers (like fixed 400px card-containers) unless explicitly appropriate for the specific design. Analyze the provided UI spec deeply. Extract the correct sizes, margins, paddings, colors, and layout strategies (flex, grid, absolute positioning) natively from the spec's dimensions and structure. If it is a full-width dashboard, ensure elements expand correctly. If it is a centered form, center it. Rely completely on the visual analysis of the layout to determine the final CSS.
+- cssContent: :root block with CSS vars + all className selectors. Accurately replicate the layout, alignment, and sizing of components based strictly on the provided specification.
+- JSON strings: escape newlines as \n, escape quotes as \". No literal newlines inside string values.
+- Complete code only. Never truncate.

@@ -14,11 +14,14 @@ Pillow>=10.3.0
 # Environment variable loading
 python-dotenv>=1.0.1
 
-# Web UI (control panel only — not for the generated app)
-flask>=3.0.3
+# FastAPI Web Backend
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.9
 
 # Rich terminal output (pipeline progress)
 rich>=13.7.1
 
 # Utilities
 pathlib2>=2.3.7
+

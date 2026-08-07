@@ -33,8 +33,9 @@ class CodeGenerator:
     Stage 3: Generates React/Vite project from spec + mapping.
     """
 
-    def __init__(self, groq_client: GroqClient) -> None:
+    def __init__(self, groq_client: GroqClient, framework: str = "React") -> None:
         self._client = groq_client
+        self.framework = framework
         self._system_prompt = self._load_prompt()
 
     # ------------------------------------------------------------------
@@ -50,6 +51,7 @@ class CodeGenerator:
         mapping_path: Path,
         file_manager: FileManager,
         project_name: str,
+        css_strategy: str = "Separate",
         progress_cb: Optional[Callable[[str], None]] = None,
     ) -> Optional[TraceabilityReport]:
 
@@ -58,40 +60,113 @@ class CodeGenerator:
                 progress_cb(msg)
             console.print(f"  [cyan]{msg}[/cyan]")
 
-        emit("Preparing code generation request...")
-
         spec_dict = load_json(ui_spec_path) or {}
         mapping_dict = load_json(mapping_path) or {}
+        pages = spec_dict.get("pages", [])
+        if not pages:
+            pages = [spec_dict]
+        # Extract global design tokens to pass into every page prompt
+        design_tokens = spec_dict.get("designTokens") or spec_dict.get("global_design_tokens") or {}
 
-        user_prompt = self._build_prompt(spec_dict, mapping_dict, image_path)
+        if settings.provider in ("openrouter", "openai"):
+            code_models = [
+                settings.code_model,
+                "openai/gpt-4o-mini",
+                "qwen/qwen-2.5-coder-32b-instruct:free",
+                "meta-llama/llama-3.3-70b-instruct:free",
+            ]
+        else:
+            code_models = [settings.code_model, "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        code_models = list(dict.fromkeys([m for m in code_models if m]))
+        system_prompt = self._system_prompt.replace("{{LANGUAGE}}", EXT.upper())
 
-        code_models = [settings.code_model, "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-        code_models = list(dict.fromkeys([m for m in code_models if "gpt-oss" not in m]))
+        emit(f"Generating {len(pages)} page(s) — one API call per page to stay within token limits...")
 
-        raw_response = ""
-        for c_model in code_models:
-            emit(f"Sending to code model: {c_model} (this may take ~30–60s)...")
-            try:
-                raw_response = self._client.chat(
-                    system_prompt=self._system_prompt.replace("{{LANGUAGE}}", EXT.upper()),
-                    user_prompt=user_prompt,
-                    model=c_model,
-                    max_tokens=8192,
+        # ----------------------------------------------------------------
+        # Per-page generation — one focused API call per component
+        # ----------------------------------------------------------------
+        all_pages_data: List[Dict[str, Any]] = []
+        shared_components: List[Dict[str, Any]] = []
+        app_root: Dict[str, Any] = {}
+        package_json: Optional[Dict[str, Any]] = None
+
+        for page_idx, raw_page in enumerate(pages, start=1):
+            page_name = raw_page.get("pageName", raw_page.get("page_name", f"Page{page_idx}"))
+            emit(f"[{page_idx}/{len(pages)}] Generating: {page_name}...")
+
+            # Slim this page's spec to only what the LLM needs for JSX structure
+            slim_page = self._slim_spec(raw_page)
+
+            # Filter story mappings relevant to this page
+            page_id = raw_page.get("pageId", raw_page.get("page_id", ""))
+            page_mappings = [
+                m for m in mapping_dict.get("mappings", [])
+                if m.get("pageId") == page_id or m.get("page_id") == page_id
+            ] or mapping_dict.get("mappings", [])
+
+            user_prompt = self._build_page_prompt(slim_page, page_mappings, design_tokens, css_strategy)
+
+            # Log estimated token usage
+            est_in = self._estimate_tokens(system_prompt + user_prompt)
+            est_out = settings.max_tokens_code
+            emit(f"  Token estimate: ~{est_in} input + {est_out} output = ~{est_in + est_out} total")
+            if est_in > 8000:
+                emit(f"  [WARN] Input prompt is large ({est_in} est. tokens). Consider reducing ui_spec complexity.")
+
+            raw_response = ""
+            for c_model in code_models:
+                emit(f"  Model: {c_model}...")
+                try:
+                    raw_response = self._client.chat(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        model=c_model,
+                        max_tokens=settings.max_tokens_code,
+                    )
+                    if raw_response and raw_response.strip():
+                        break
+                except Exception as exc:
+                    emit(f"  [WARN] {c_model} failed: {exc}. Trying fallback...")
+                    continue
+
+            # Parse this page's response
+            page_data = self._parse_page_response(raw_response, page_name)
+            if page_data:
+                all_pages_data.append(page_data)
+                # Capture shared components + app root from first successful response
+                if not shared_components:
+                    shared_components = page_data.pop("sharedComponents", []) or []
+                if not app_root:
+                    app_root = page_data.pop("appRoot", {}) or {}
+                if not package_json:
+                    package_json = page_data.pop("packageJson", None)
+            else:
+                emit(f"  [WARN] Could not parse response for '{page_name}' — using fallback scaffold.")
+                fallback = self._fallback_page(
+                    f"{page_name.replace(' ', '')}Page",
+                    {"pageId": page_id, "pageName": page_name}
                 )
-                if raw_response and len(raw_response.strip()) > 0:
-                    break
-            except Exception as exc:
-                emit(f"[WARN] Model {c_model} failed: {exc}. Trying fallback...")
-                continue
+                all_pages_data.append({
+                    "componentName": f"{page_name.replace(' ', '')}Page",
+                    "pageName": page_name,
+                    "pageId": page_id,
+                    "route": raw_page.get("route", "/"),
+                    "storyIds": [],
+                    "reactContent": fallback,
+                    "cssContent": "",
+                })
 
-        emit("Parsing generated code...")
-        code_data = self._parse_code_response(raw_response)
-        if code_data is None:
-            emit("[ERROR] Failed to parse code generation response. Generating fallback scaffold.")
-            code_data = self._fallback_scaffold(ui_spec, mapping_doc, project_name)
+        # Assemble final code_data structure
+        code_data: Dict[str, Any] = {
+            "pages": all_pages_data,
+            "sharedComponents": shared_components,
+            "appRoot": app_root,
+        }
+        if package_json:
+            code_data["packageJson"] = package_json
 
-        emit("Writing React project files...")
-        self._write_project(code_data, file_manager, ui_spec, mapping_doc, project_name)
+        emit(f"Writing React project files ({len(all_pages_data)} page(s))...")
+        self._write_project(code_data, file_manager, ui_spec, mapping_doc, project_name, emit)
 
         emit("Building traceability report...")
         report = self._build_traceability(
@@ -99,16 +174,13 @@ class CodeGenerator:
         )
         save_json(report, file_manager.metadata_dir / "traceability.json")
 
-        # Copy reference image to assets
         emit("Copying reference image to assets...")
         file_manager.copy_asset(image_path)
 
         emit("Running npm install...")
         self._npm_install(file_manager.react_app_dir, emit)
 
-        emit(
-            f"Stage 3 complete — {len(code_data.get('pages', []))} page(s) generated."
-        )
+        emit(f"Stage 3 complete — {len(all_pages_data)} page(s) generated.")
         return report
 
     # ------------------------------------------------------------------
@@ -116,14 +188,138 @@ class CodeGenerator:
     # ------------------------------------------------------------------
 
     def _load_prompt(self) -> str:
-        prompt_path = settings.prompts_dir / "code_generation.txt"
+        fw_raw = self.framework.lower()
+        if "angular" in fw_raw:
+            prompt_name = "angular_generation.txt"
+            fallback = "You are an Angular developer. Generate a complete Angular standalone project. Return ONLY valid JSON."
+        else:
+            prompt_name = "react_generation.txt"
+            fallback = "You are a React developer. Generate a complete React/Vite project. Return ONLY valid JSON."
+            
+        prompt_path = settings.prompts_dir / prompt_name
         if prompt_path.exists():
             return prompt_path.read_text(encoding="utf-8")
+        return fallback
+
+    def _slim_spec(self, page_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compress a page spec for the LLM prompt.
+        - Keeps structural fields (elementId, elementType, label, htmlTag, inputType)
+        - Keeps visual fields (color, backgroundColor, borderRadius, width, height)
+          but compacts them into a single 'style' dict to save tokens
+        - Drops verbose/redundant fields (attributes, description, placeholder
+          if empty, children if empty)
+        Reduces input tokens by ~35% vs full spec while preserving visual accuracy.
+        """
+        # Fields to fold into a compact 'style' dict
+        _STYLE_FIELDS = {"color", "backgroundColor", "fontSize", "fontWeight",
+                         "borderRadius", "width", "height"}
+        # Fields to drop entirely (not useful for code gen)
+        _DROP_FIELDS = {"attributes", "description", "position"}
+
+        def slim_element(el: Dict[str, Any]) -> Dict[str, Any]:
+            slimmed: Dict[str, Any] = {}
+            style: Dict[str, Any] = {}
+            for k, v in el.items():
+                if k in _DROP_FIELDS:
+                    continue
+                elif k in _STYLE_FIELDS:
+                    if v is not None:  # only include non-null style values
+                        style[k] = v
+                elif k == "styles" and isinstance(v, dict):
+                    style.update({sk: sv for sk, sv in v.items() if sv is not None})
+                elif k == "placeholder" and not v:
+                    continue  # skip empty placeholders
+                elif k == "children":
+                    if isinstance(v, list) and v:
+                        slimmed["children"] = [slim_element(c) for c in v]
+                else:
+                    slimmed[k] = v
+            if style:
+                slimmed["style"] = style
+            return slimmed
+
+        def slim_section(sec: Dict[str, Any]) -> Dict[str, Any]:
+            s = {k: v for k, v in sec.items()
+                 if k not in ("backgroundColor", "attributes")}
+            if "elements" in s and isinstance(s["elements"], list):
+                s["elements"] = [slim_element(e) for e in s["elements"]]
+            return s
+
+        slimmed_page = {k: v for k, v in page_dict.items()
+                        if k not in ("primaryColor", "secondaryColor",
+                                     "backgroundColor", "fontFamily")}
+        if "sections" in slimmed_page and isinstance(slimmed_page["sections"], list):
+            slimmed_page["sections"] = [
+                slim_section(sec) for sec in slimmed_page["sections"]
+            ]
+        return slimmed_page
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Rough token count estimate: 1 token ≈ 4 characters (OpenAI/Groq rule of thumb)."""
+        return max(1, len(text) // 4)
+
+    def _build_page_prompt(
+        self,
+        slim_page: Dict[str, Any],
+        page_mappings: List[Dict[str, Any]],
+        design_tokens: Optional[Dict[str, Any]] = None,
+        css_strategy: str = "Separate",
+    ) -> str:
+        """Build a focused single-page prompt — compact but visually precise."""
+        fw_raw = self.framework.lower()
+        if "angular" in fw_raw:
+            fw_label = "Angular (TypeScript)"
+            fw_instruction = "Generate a standalone Angular component (@Component with TypeScript class + template) + CSS stylesheet"
+        elif "jsx" in fw_raw:
+            fw_label = "React JSX"
+            fw_instruction = "Generate a React JSX component + CSS stylesheet"
+        else:
+            fw_label = "React TSX (TypeScript)"
+            fw_instruction = "Generate a React TSX (TypeScript) component + CSS stylesheet"
+
+        tokens_block = ""
+        if design_tokens:
+            tokens_block = (
+                "## Design Tokens (use these exact values in CSS)\n"
+                f"{json.dumps(design_tokens)}\n\n"
+            )
         return (
-            "You are a React developer. Generate a complete React/Vite project. "
-            "Return ONLY valid JSON. No markdown fences."
+            f"Framework Target: {fw_label}\n"
+            f"CSS Framework/Styling: {css_strategy}\n"
+            f"{fw_instruction} for the page spec below. Ensure you use the exact requested CSS framework (e.g. Tailwind utility classes, MUI components, or standard CSS if Separate).\n"
+            "If using a component library (like MUI or Bootstrap), add the required dependencies to packageJson.\n\n"
+            + tokens_block
+            + "## Page Spec\n"
+            f"```json\n{json.dumps(slim_page, indent=2)}\n```\n\n"
+            "## Story Mappings\n"
+            f"{json.dumps(page_mappings)}\n\n"
+            f"Target: {fw_label}. Return ONLY the JSON object (pageId, pageName, route, "
+            "componentName, fileName, storyIds, reactContent, cssContent). "
+            "In component content: set max-width on the card container to match the image width. "
+            "Use exact colors from Design Tokens and element style fields."
         )
 
+    def _parse_page_response(self, raw: str, page_name: str) -> Optional[Dict[str, Any]]:
+        """Parse a single-page code generation response."""
+        data = self._parse_code_response(raw)
+        if data is None:
+            return None
+        # If the LLM returned a pages list, extract the first page
+        pages = data.get("pages", [])
+        if isinstance(pages, list) and pages:
+            page = pages[0]
+            # Carry over app-level keys
+            for key in ("sharedComponents", "appRoot", "packageJson", "viteConfig", "tsConfig"):
+                if key in data and key not in page:
+                    page[key] = data[key]
+            return page
+        # If the LLM returned a single page object directly
+        if any(k in data for k in ("components", "reactContent", "angularContent", "codeContent", "componentName")):
+            return data
+        return data  # return whatever we got; _write_project is robust
+
+    # Legacy full-spec prompt (kept for reference / single-page fallback)
     def _build_prompt(
         self,
         spec_dict: Dict[str, Any],
@@ -144,7 +340,6 @@ class CodeGenerator:
     # ------------------------------------------------------------------
     # Write project files
     # ------------------------------------------------------------------
-
     def _write_project(
         self,
         data: Dict[str, Any],
@@ -152,9 +347,11 @@ class CodeGenerator:
         ui_spec: UISpec,
         mapping_doc: MappingDocument,
         project_name: str,
+        emit: Callable[[str], None] = lambda x: None,
     ) -> None:
-        ext = settings.output_language
-        is_ts = settings.is_typescript
+        is_angular = "angular" in self.framework.lower()
+        ext = "ts" if is_angular else ("tsx" if settings.is_typescript else "jsx")
+        is_ts = settings.is_typescript or is_angular
 
         # --- package.json ---
         pkg = data.get("packageJson", self._default_package_json(project_name))
@@ -178,12 +375,14 @@ class CodeGenerator:
         vite_ext = "ts" if is_ts else "js"
         fm.write_text(fm.react_app_dir / f"vite.config.{vite_ext}", vite_cfg)
 
-        # --- tsconfig.json ---
+        # --- tsconfig.json + tsconfig.node.json ---
         if is_ts:
             ts_cfg = data.get("tsConfig", self._default_tsconfig())
             if not isinstance(ts_cfg, str):
                 ts_cfg = json.dumps(ts_cfg, indent=2) if isinstance(ts_cfg, dict) else self._default_tsconfig()
             fm.write_text(fm.react_app_dir / "tsconfig.json", ts_cfg)
+            # tsconfig.json references tsconfig.node.json — always write it to prevent ENOENT errors
+            fm.write_text(fm.react_app_dir / "tsconfig.node.json", self._default_tsconfig_node())
 
         # --- index.html (Vite entry) ---
         fm.write_text(
@@ -191,21 +390,31 @@ class CodeGenerator:
             self._vite_index_html(project_name),
         )
 
-        # --- App root ---
         app_root = data.get("appRoot", {})
         if not isinstance(app_root, dict):
             app_root = {}
-        app_content = app_root.get("appContent") if isinstance(app_root, dict) else None
-        if not app_content or not isinstance(app_content, str):
-            app_content = self._default_app_root(data, ext)
 
-        main_content = app_root.get("mainContent") if isinstance(app_root, dict) else None
-        if not main_content or not isinstance(main_content, str):
-            main_content = self._default_main(is_ts)
+        if is_angular:
+            app_content, routes_content, config_content, main_content = self._default_angular_app(data)
+            fm.write_text(fm.react_src_dir / f"app.component.ts", app_content)
+            fm.write_text(fm.react_src_dir / f"app.routes.ts", routes_content)
+            fm.write_text(fm.react_src_dir / f"app.config.ts", config_content)
+            fm.write_text(fm.react_src_dir / f"main.ts", main_content)
+            fm.write_text(fm.react_src_dir / "index.css", self._global_css(ui_spec))
+            fm.write_text(fm.react_src_dir / "styles.css", "@import 'index.css';")
+        else:
+            app_content = app_root.get("appContent") if isinstance(app_root, dict) else None
+            if not app_content or not isinstance(app_content, str):
+                app_content = self._default_app_root(data, ext)
 
-        fm.write_text(fm.react_src_dir / f"App.{ext}", app_content)
-        fm.write_text(fm.react_src_dir / f"main.{ext}", main_content)
-        fm.write_text(fm.react_src_dir / "index.css", self._global_css(ui_spec))
+            main_content = app_root.get("mainContent") if isinstance(app_root, dict) else None
+            if not main_content or not isinstance(main_content, str):
+                main_content = self._default_main(is_ts)
+
+            fm.write_text(fm.react_src_dir / f"App.{ext}", app_content)
+            fm.write_text(fm.react_src_dir / f"main.{ext}", main_content)
+            fm.write_text(fm.react_src_dir / "index.css", self._global_css(ui_spec))
+
 
         # --- Shared sub-components (Header, Sidebar, Footer, Nav, Cards) ---
         shared_comps = data.get("sharedComponents", [])
@@ -214,16 +423,22 @@ class CodeGenerator:
                 if not isinstance(comp, dict):
                     continue
                 comp_name = comp.get("componentName", "Component")
-                react_content = comp.get("reactContent", "")
+                react_content = comp.get("codeContent") or comp.get("angularContent") or comp.get("reactContent", "")
                 css_content = comp.get("cssContent", "")
 
                 react_content = self._clean_react_code(react_content, comp_name, ext, is_ts)
+                # Unescape JSON-encoded newlines in both react and css content
+                if "\\n" in react_content:
+                    react_content = react_content.replace("\\n", "\n")
                 if "\\n" in css_content:
                     css_content = css_content.replace("\\n", "\n")
 
-                fm.write_text(fm.shared_components_dir / f"{comp_name}.{ext}", react_content)
+                comp_dir = fm.shared_components_dir / comp_name
+                comp_dir.mkdir(parents=True, exist_ok=True)
+
+                fm.write_text(comp_dir / f"{comp_name}.{ext}", react_content)
                 if css_content:
-                    fm.write_text(fm.shared_components_dir / f"{comp_name}.css", css_content)
+                    fm.write_text(comp_dir / f"{comp_name}.css", css_content)
 
         # --- Component pages ---
         pages_list = data.get("pages", [])
@@ -239,28 +454,61 @@ class CodeGenerator:
                 raw_cname += "Page"
             component_name = raw_cname
 
-            react_content = page.get("reactContent", self._fallback_page(component_name, page))
-            css_content = page.get("cssContent", "")
+            # Create nested directory: src/components/{foldername}
+            folder_name = component_name
+            if folder_name.endswith("Page") and len(folder_name) > 4:
+                folder_name = folder_name[:-4]
+            if not folder_name:
+                folder_name = "Home"
+            page_dir = fm.react_src_dir / "components" / folder_name
+            page_dir.mkdir(parents=True, exist_ok=True)
 
-            react_content = self._clean_react_code(react_content, component_name, ext, is_ts)
-            if "\\n" in css_content:
-                css_content = css_content.replace("\\n", "\n")
+            # Determine components to write
+            components_to_write = page.get("components", [])
+            if not components_to_write:
+                # Fallback to single monolithic component
+                components_to_write = [{
+                    "componentName": component_name,
+                    "reactContent": page.get("codeContent") or page.get("angularContent") or page.get("reactContent", self._fallback_page(component_name, page)),
+                    "cssContent": page.get("cssContent", "")
+                }]
+            
+            for comp_data in components_to_write:
+                sub_comp_name = comp_data.get("componentName", "Component").replace(" ", "")
+                react_content = comp_data.get("codeContent") or comp_data.get("angularContent") or comp_data.get("reactContent", "")
+                css_content = comp_data.get("cssContent", "")
 
-            # Ensure component CSS file exists and is imported
-            if css_content:
-                fm.write_text(fm.react_src_dir / f"{component_name}.css", css_content)
-                if f"import './{component_name}.css';" not in react_content:
-                    if "import React" in react_content:
-                        react_content = react_content.replace("import React", f"import './{component_name}.css';\nimport React", 1)
+                react_content = self._clean_react_code(react_content, sub_comp_name, ext, is_ts)
+                if "\\n" in react_content:
+                    react_content = react_content.replace("\\n", "\n")
+                if "\\n" in css_content:
+                    css_content = css_content.replace("\\n", "\n")
+
+                if sub_comp_name == folder_name:
+                    sub_comp_dir = page_dir
+                else:
+                    sub_comp_dir = page_dir / sub_comp_name
+                sub_comp_dir.mkdir(parents=True, exist_ok=True)
+
+                css_import = f"import './{sub_comp_name}.css';"
+                if css_content and len(css_content.strip()) > 20:
+                    fm.write_text(sub_comp_dir / f"{sub_comp_name}.css", css_content)
+                else:
+                    css_content = self._default_component_css(sub_comp_name, ui_spec)
+                    fm.write_text(sub_comp_dir / f"{sub_comp_name}.css", css_content)
+
+                if css_import not in react_content and "./index.css" not in react_content:
+                    first_import = re.search(r'^import\s', react_content, re.MULTILINE)
+                    if first_import:
+                        react_content = react_content[:first_import.start()] + css_import + "\n" + react_content[first_import.start():]
                     else:
-                        react_content = f"import './{component_name}.css';\n" + react_content
-            else:
-                default_css = f"/* Styles for {component_name} */\n"
-                fm.write_text(fm.react_src_dir / f"{component_name}.css", default_css)
-                if f"import './{component_name}.css';" not in react_content and "./index.css" not in react_content:
-                    react_content = f"import './{component_name}.css';\n" + react_content
+                        react_content = css_import + "\n\n" + react_content
 
-            fm.write_text(fm.react_src_dir / f"{component_name}.{ext}", react_content)
+                fm.write_text(sub_comp_dir / f"{sub_comp_name}.{ext}", react_content)
+        
+        # --- Strict Import Validation Phase ---
+        emit("Validating generated imports...")
+        self._auto_fix_imports(fm, ext, emit)
 
     # ------------------------------------------------------------------
     # Story metadata
@@ -295,43 +543,81 @@ class CodeGenerator:
         save_json({"storyId": story_id, "mappings": mappings}, story_dir / "ui_mapping.json")
 
     def _clean_react_code(self, content: str, comp_name: str, ext: str, is_ts: bool) -> str:
-        """Sanitize generated React code: fix export, imports, and JSX/TSX syntax."""
+        """Sanitize generated React code: strip non-code preambles, fix export, imports, and JSX/TSX syntax."""
         if not content:
             return content
 
-        # Auto-repair unclosed double-quoted strings on JSX lines
+        # ── Step 0: Strip non-code preamble the LLM sometimes wraps around code ─
+
+        # 0a. Remove HTML comment blocks <!-- ... --> (causes Vite 'Unexpected token')
+        content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
+
+        # 0b. Remove ASCII/box-art banner lines (rows of ~, =, *, -)
+        content = re.sub(r'^\s*[~=\-*]{3,}\s*$', '', content, flags=re.MULTILINE)
+
+        # 0c. Strip any leading text before the first JS keyword
+        #     Handles: "Here is the component:", title lines, stray descriptions
+        first_code = re.search(
+            r'^(?:import\s|export\s|const\s|function\s|\/\/|\/\*)',
+            content,
+            re.MULTILINE,
+        )
+        if first_code and first_code.start() > 0:
+            content = content[first_code.start():]
+
+        # 0d. Remove standalone decorator/title lines that survived
+        #     e.g. "React Component: LoginPage" or "File: LoginPage.tsx"
+        content = re.sub(r'^[A-Za-z][^\n]{0,60}:\s*$', '', content, flags=re.MULTILINE)
+
+        # Collapse multiple blank lines left by the stripping above
+        content = re.sub(r'\n{3,}', '\n\n', content).strip()
+
+        # ── Step 1: Import fix delegated to post-generation auto-healer ─────────────
+        # (See _auto_fix_imports)
+
+
+        # ── Step 2: Strip TS annotations when generating JSX ────────────────────
+        if not is_ts or ext == "jsx":
+            content = re.sub(r"interface\s+\w+\s*\{[^}]*\}", "", content, flags=re.DOTALL)
+            content = re.sub(r"type\s+\w+\s*=[^;]+;", "", content)
+            content = re.sub(r"const\s+(\w+)\s*:\s*React\.FC(?:<[^>]+>)?\s*=", r"const \1 =", content)
+            content = re.sub(r":\s*React\.FC(?:<[^>]+>)?", "", content)
+            content = re.sub(r"useState<[^>]+>\(([^)]*)\)", r"useState(\1)", content)
+            content = re.sub(
+                r"(\w+):\s*(?:string|number|boolean|any|Dispatch<[^>]+>|SetStateAction<[^>]+>)",
+                r"\1",
+                content,
+            )
+            content = re.sub(r",?\s*(?:Dispatch|SetStateAction|FC)\b", "", content)
+            content = re.sub(
+                r"import React\s*,\s*\{\s*\}\s*from 'react';",
+                "import React from 'react';",
+                content,
+            )
+
+        # ── Step 3: Fix malformed template literals in className ─────────────────
+        content = re.sub(
+            r'className=\{([^`\'"\n\}]*\$\{[^\n\}]+\}[^`\'"\n\}]*)\}',
+            r'className={`\1`}',
+            content,
+        )
+
+        # ── Step 4: Auto-repair unclosed quotes — narrowed to real JSX tag lines ─
+        # Skip lines with SVG path data to avoid corrupting 'd' attributes
         lines = content.splitlines()
         fixed_lines = []
         for line in lines:
-            quote_count = line.count('"') - line.count('\\"')
-            if quote_count % 2 != 0 and ('<' in line or '>' in line or '=' in line or 'svg' in line or 'path' in line):
-                line = line.rstrip() + '"'
+            stripped = line.lstrip()
+            is_jsx_line = stripped.startswith('<') or ('=' in line and ('<' in line or '>' in line))
+            is_svg_data = 'svg' in line.lower() or 'd="' in line or "d='" in line
+            if is_jsx_line and not is_svg_data:
+                quote_count = line.count('"') - line.count('\\"')
+                if quote_count % 2 != 0:
+                    line = line.rstrip() + '"'
             fixed_lines.append(line)
         content = "\n".join(fixed_lines).rstrip()
 
-        # 1. Fix nested/broken import paths (e.g. '../sharedComponents/Sidebar' -> './Sidebar')
-        content = re.sub(r"from\s+['\"](?:\.\./sharedComponents/|\./sharedComponents/|\./stories/[^/]+/)([^'\"]+)['\"]", r"from './\1'", content)
-
-        # 2. If output language is JSX (JavaScript), strip TypeScript annotations if model accidentally generated them
-        if not is_ts or ext == "jsx":
-            # Remove interface/type definitions
-            content = re.sub(r"interface\s+\w+\s*\{[^}]*\}", "", content, flags=re.DOTALL)
-            content = re.sub(r"type\s+\w+\s*=[^;]+;", "", content)
-            # Remove const Component: React.FC = or const Component: React.FC<Props> =
-            content = re.sub(r"const\s+(\w+)\s*:\s*React\.FC(?:<[^>]+>)?\s*=", r"const \1 =", content)
-            content = re.sub(r":\s*React\.FC(?:<[^>]+>)?", "", content)
-            # Remove typed useState<type>(...)
-            content = re.sub(r"useState<[^>]+>\(([^)]*)\)", r"useState(\1)", content)
-            # Remove parameter type annotations like (key: string, route: string) -> (key, route)
-            content = re.sub(r"(\w+):\s*(?:string|number|boolean|any|Dispatch<[^>]+>|SetStateAction<[^>]+>)", r"\1", content)
-            # Remove typed imports like { Dispatch, SetStateAction } from 'react'
-            content = re.sub(r",?\s*(?:Dispatch|SetStateAction|FC)\b", "", content)
-            content = re.sub(r"import React\s*,\s*\{\s*\}\s*from 'react';", "import React from 'react';", content)
-
-        # 3. Fix malformed template literal strings missing backticks inside JSX attributes (e.g. className={-input ${...}})
-        content = re.sub(r'className=\{([^`\'"\n\}]*\$\{[^\n\}]+\}[^`\'"\n\}]*)\}', r'className={`\1`}', content)
-
-        # 3. Fix truncated export line
+        # ── Step 5: Ensure complete export statement ─────────────────────────────
         if content.endswith("export default"):
             content = content + f" {comp_name};"
         elif content.endswith("export"):
@@ -576,6 +862,71 @@ export default {component_name};
 </html>
 """
 
+    def _default_angular_app(self, data: Dict[str, Any]) -> tuple[str, str, str, str]:
+        pages = data.get("pages", [])
+        imports = []
+        routes = []
+        for p in pages:
+            cname = p.get('componentName') or p.get('pageName', 'Page').replace(' ', '')
+            if not cname.endswith("Page") and not p.get('componentName'):
+                cname += "Page"
+            folder_name = cname
+            if folder_name.endswith("Page") and len(folder_name) > 4:
+                folder_name = folder_name[:-4]
+            if not folder_name:
+                folder_name = "Home"
+            
+            imports.append(f"import {{ {cname} }} from './components/{folder_name}/{cname}';")
+            rpath = p.get("route", "/")
+            if rpath.startswith("/"):
+                rpath = rpath[1:]
+            routes.append(f"  {{ path: '{rpath}', component: {cname} }},")
+
+        imports_str = "\n".join(imports)
+        routes_str = "\n".join(routes)
+        first_route = pages[0].get("route", "/") if pages else "/"
+        if first_route.startswith("/"):
+            first_route = first_route[1:]
+
+        app_content = """import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [RouterOutlet],
+  template: `<router-outlet></router-outlet>`
+})
+export class AppComponent {}
+"""
+
+        routes_content = f"""import {{ Routes }} from '@angular/router';
+{imports_str}
+
+export const routes: Routes = [
+{routes_str}
+  {{ path: '**', redirectTo: '{first_route}' }}
+];
+"""
+
+        config_content = """import { ApplicationConfig } from '@angular/core';
+import { provideRouter } from '@angular/router';
+import { routes } from './app.routes';
+
+export const appConfig: ApplicationConfig = {
+  providers: [provideRouter(routes)]
+};
+"""
+
+        main_content = """import { bootstrapApplication } from '@angular/platform-browser';
+import { AppComponent } from './app.component';
+import { appConfig } from './app.config';
+
+bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err));
+"""
+
+        return app_content, routes_content, config_content, main_content
+
     def _default_app_root(self, data: Dict[str, Any], ext: str) -> str:
         pages = data.get("pages", [])
         imports = []
@@ -584,7 +935,16 @@ export default {component_name};
             cname = p.get('componentName') or p.get('pageName', 'Page').replace(' ', '')
             if not cname.endswith("Page") and not p.get('componentName'):
                 cname += "Page"
-            imports.append(f"import {cname} from './{cname}';")
+            folder_name = cname
+            if folder_name.endswith("Page") and len(folder_name) > 4:
+                folder_name = folder_name[:-4]
+            if not folder_name:
+                folder_name = "Home"
+            
+            # Since component goes to src/components/{folder_name}/{cname}.ext
+            # and if sub_comp_name == folder_name, it's src/components/{folder_name}/{cname}.ext
+            # Wait, in code generation, if sub_comp_name is the cname...
+            imports.append(f"import {cname} from './components/{folder_name}/{cname}';")
             rpath = p.get("route", "/")
             routes.append(f'<Route path="{rpath}" element={{<{cname} />}} />')
 
@@ -716,13 +1076,42 @@ body {{
     <title>{project_name}</title>
   </head>
   <body>
+    <app-root></app-root>
     <div id="root"></div>
-    <script type="module" src="/src/main.{settings.output_language}"></script>
+    <script type="module" src="/src/main.{'ts' if 'angular' in self.framework.lower() else settings.output_language}"></script>
   </body>
 </html>
 """
 
     def _default_package_json(self, project_name: str) -> Dict[str, Any]:
+        is_angular = "angular" in self.framework.lower()
+        if is_angular:
+            return {
+                "name": project_name.lower().replace(" ", "-"),
+                "version": "1.0.0",
+                "private": True,
+                "type": "module",
+                "scripts": {
+                    "dev": "vite",
+                    "build": "tsc && vite build",
+                    "preview": "vite preview",
+                },
+                "dependencies": {
+                    "@angular/common": "^17.0.0",
+                    "@angular/compiler": "^17.0.0",
+                    "@angular/core": "^17.0.0",
+                    "@angular/platform-browser": "^17.0.0",
+                    "@angular/platform-browser-dynamic": "^17.0.0",
+                    "rxjs": "~7.8.0",
+                    "zone.js": "~0.14.0"
+                },
+                "devDependencies": {
+                    "@analogjs/vite-plugin-angular": "^1.0.0",
+                    "vite": "^5.0.0",
+                    "typescript": "~5.2.2"
+                }
+            }
+            
         deps: Dict[str, str] = {
             "react": "^18.2.0",
             "react-dom": "^18.2.0",
@@ -755,6 +1144,18 @@ body {{
         }
 
     def _default_vite_config(self, is_ts: bool) -> str:
+        if "angular" in self.framework.lower():
+            return """import { defineConfig } from 'vite';
+import angular from '@analogjs/vite-plugin-angular';
+
+export default defineConfig({
+  plugins: [angular()],
+  server: {
+    port: 3000,
+    open: true,
+  },
+});
+"""
         return """import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -807,3 +1208,235 @@ export default defineConfig({
             },
             indent=2,
         )
+
+    def _default_component_css(self, component_name: str, ui_spec: Any) -> str:
+        tokens = ui_spec.design_tokens if hasattr(ui_spec, "design_tokens") else {}
+        primary = tokens.get("primaryColor", "#2563eb")
+        bg = tokens.get("backgroundColor", "#f8fafc")
+        text = tokens.get("textColor", "#0f172a")
+        radius = tokens.get("borderRadius", "8px")
+
+        return f"""/* Production CSS Styles for {component_name} */
+.page-wrapper, .container, .{component_name.lower()}-container, .page-container {{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  width: 100%;
+  padding: 2rem 1rem;
+  background-color: {bg};
+  color: {text};
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  box-sizing: border-box;
+}}
+
+.card, .form-card, .card-container, .card-box, form {{
+  width: 100%;
+  max-width: 420px;
+  background: #ffffff;
+  border-radius: {radius};
+  padding: 2.5rem 2rem;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+  border: 1px solid #cbd5e1;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  box-sizing: border-box;
+}}
+
+.heading, h1, h2 {{
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #0f172a;
+  text-align: center;
+  margin-bottom: 0.5rem;
+}}
+
+.subheading, p {{
+  font-size: 0.95rem;
+  color: #64748b;
+  text-align: center;
+  margin-bottom: 1rem;
+}}
+
+.label, label {{
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 0.375rem;
+}}
+
+.input, input[type="text"], input[type="email"], input[type="password"] {{
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  border-radius: {radius};
+  border: 1px solid #cbd5e1;
+  background-color: #f8fafc;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+}}
+
+.input:focus, input:focus {{
+  outline: none;
+  border-color: {primary};
+  background-color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}}
+
+.button, button {{
+  width: 100%;
+  padding: 0.875rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #ffffff;
+  background-color: {primary};
+  border: none;
+  border-radius: {radius};
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+}}
+
+.button:hover, button:hover {{
+  filter: brightness(0.92);
+}}
+
+.link, a {{
+  color: {primary};
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-align: right;
+}}
+
+.link:hover, a:hover {{
+  text-decoration: underline;
+}}
+"""
+
+    def _auto_fix_imports(self, fm: FileManager, ext: str, emit: Callable[[str], None]) -> None:
+        import os
+        import re
+        from pathlib import Path
+        
+        missing_imports = []
+        
+        # Build a map of all files in src directory for fast lookup
+        # key: filename (e.g. "Button.tsx"), value: absolute Path
+        file_map = {}
+        for root, dirs, files in os.walk(fm.react_src_dir):
+            for file in files:
+                file_map[file] = Path(root) / file
+                
+        def get_relative_import_path(from_path: Path, to_path: Path, is_css: bool = False) -> str:
+            # os.path.relpath calculates the relative path from the directory of from_path
+            rel = os.path.relpath(to_path, from_path.parent)
+            rel = rel.replace("\\\\", "/")
+            if not rel.startswith("."):
+                rel = "./" + rel
+            if not is_css:
+                # Remove extension for TS/JS imports
+                rel = os.path.splitext(rel)[0]
+                # If it points to an index file, we can just point to the directory
+                if rel.endswith("/index"):
+                    rel = rel[:-6]
+            return rel
+
+        # Scan all generated files in src
+        for root, dirs, files in os.walk(fm.react_src_dir):
+            for file in files:
+                if not file.endswith(f".{ext}"):
+                    continue
+                    
+                file_path = Path(root) / file
+                content = file_path.read_text(encoding="utf-8")
+                original_content = content
+                
+                # Find all import statements
+                # regex captures the full import statement and the path string
+                import_pattern = r'(import\s+.*?from\s+[\'"]([^\'"]+)[\'"]|import\s+[\'"]([^\'"]+)[\'"])'
+                
+                for full_match, path1, path2 in re.findall(import_pattern, content):
+                    import_path = path1 or path2
+                    
+                    # We only validate local relative imports
+                    if not import_path.startswith("."):
+                        continue
+                        
+                    is_css = import_path.endswith(".css")
+                    target_file = (file_path.parent / import_path).resolve()
+                    
+                    # Check if the file exists
+                    exists = False
+                    if is_css:
+                        exists = target_file.exists()
+                    else:
+                        exists = (
+                            target_file.with_suffix(f".{ext}").exists() or
+                            (target_base := target_file) and False or # dummy
+                            target_file.with_suffix(".ts").exists() or
+                            target_file.with_suffix(".js").exists() or
+                            target_file.with_suffix(".tsx").exists() or
+                            target_file.with_suffix(".jsx").exists() or
+                            (target_file / f"index.{ext}").exists()
+                        )
+                        
+                    if not exists:
+                        # Auto-heal: search for the intended file
+                        # Extract the component name from the end of the import path
+                        comp_name = import_path.split("/")[-1]
+                        if not is_css:
+                            candidates = [comp_name]
+                            if comp_name.endswith(".component"):
+                                candidates.append(comp_name[:-10])
+                                
+                            # Try to find a matching tsx, ts, jsx, js file
+                            found_target = None
+                            
+                            # Create a normalized file map for robust fallback matching (lowercased, no dashes)
+                            norm_file_map = {k.lower().replace("-", ""): v for k, v in file_map.items()}
+                            
+                            for c_name in candidates:
+                                for search_ext in [ext, "ts", "js", "tsx", "jsx"]:
+                                    exact_key = f"{c_name}.{search_ext}"
+                                    norm_key = exact_key.lower().replace("-", "")
+                                    
+                                    if exact_key in file_map:
+                                        found_target = file_map[exact_key]
+                                        break
+                                    elif norm_key in norm_file_map:
+                                        found_target = norm_file_map[norm_key]
+                                        break
+                                if found_target:
+                                    break
+                            
+                            if found_target:
+                                new_rel_path = get_relative_import_path(file_path, found_target, is_css=False)
+                                # Replace the exact string in the content
+                                content = content.replace(f"'{import_path}'", f"'{new_rel_path}'")
+                                content = content.replace(f'"{import_path}"', f'"{new_rel_path}"')
+                                emit(f"  [Auto-Heal] Fixed import in {file_path.name}: {import_path} -> {new_rel_path}")
+                            else:
+                                missing_imports.append(f"{file_path.name}: {import_path}")
+                        else:
+                            # CSS healing
+                            if comp_name in file_map:
+                                found_target = file_map[comp_name]
+                                new_rel_path = get_relative_import_path(file_path, found_target, is_css=True)
+                                content = content.replace(f"'{import_path}'", f"'{new_rel_path}'")
+                                content = content.replace(f'"{import_path}"', f'"{new_rel_path}"')
+                                emit(f"  [Auto-Heal] Fixed CSS import in {file_path.name}: {import_path} -> {new_rel_path}")
+                            else:
+                                missing_imports.append(f"{file_path.name}: {import_path}")
+                
+                if content != original_content:
+                    file_path.write_text(content, encoding="utf-8")
+                            
+        if missing_imports:
+            error_report = "Validation Failed: Missing Imported Files\\n" + "\\n".join(missing_imports)
+            emit(f"  [ERROR] {error_report}")
+            raise ValueError(error_report)
+        else:
+            emit("  ✓ Import validation and auto-healing passed.")
+

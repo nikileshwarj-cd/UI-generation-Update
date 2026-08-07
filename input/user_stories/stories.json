@@ -1,63 +1,61 @@
 {
   "stories": [
     {
-      "story_id": "US002",
-      "epic_id": "EP002",
-      "title": "User Profile Management Page",
-      "description": "As an authenticated user, I want to view and update my personal profile information so that my account details remain accurate and up to date.",
+      "story_id": "US001",
+      "epic_id": "EP001",
+      "title": "User Login Page",
+      "description": "As a registered user, I want to log in using my email and password so that I can securely access the application dashboard.",
       "acceptance_criteria": [
-        "Display the user's profile information after successful authentication.",
-        "Display editable fields for first name, last name, phone number, and profile picture.",
-        "Display the user's email address as a read-only field.",
-        "Allow users to update their profile information.",
-        "Allow users to upload or change their profile picture.",
-        "Display a 'Save Changes' button to submit profile updates.",
-        "Display a 'Cancel' button to discard unsaved changes.",
-        "Display success and error messages based on the update operation.",
-        "Load profile information from the backend profile API.",
-        "Display a loading indicator while profile data is being fetched."
+        "Display a login page with email and password input fields.",
+        "Display a 'Remember Me' checkbox below the password field.",
+        "Display a 'Forgot Password?' link that redirects users to the password recovery page.",
+        "Provide a 'Login' button that submits the login form.",
+        "Validate that the email is in a valid format before submission.",
+        "Validate that the password field is not empty and contains at least 8 characters.",
+        "Display appropriate validation messages for invalid inputs.",
+        "Authenticate the user using the backend login API.",
+        "Redirect authenticated users to the dashboard upon successful login.",
+        "Display an error message if the login credentials are invalid."
       ],
       "business_rules": [
-        "Only authenticated and active users can access their profile.",
-        "Users can only update their own profile information.",
-        "Email addresses cannot be modified after registration.",
-        "Profile updates must be recorded with the latest modification timestamp."
+        "Only registered and active users are allowed to log in.",
+        "Users with invalid credentials must not be authenticated.",
+        "The login form must prevent submission if validation fails.",
+        "User sessions must be authenticated using JWT access tokens."
       ],
       "dependencies": [
+        "User Registration",
         "JWT Authentication Service",
-        "User Management Module",
-        "File Upload Service"
+        "Dashboard Module"
       ],
       "api_requirements": [
-        "GET /api/v1/users/me - Response: 200 OK with authenticated user's profile details.",
-        "PUT /api/v1/users/me - Request: {first_name, last_name, phone_number, profile_image}, Response: 200 OK with updated user profile.",
-        "POST /api/v1/uploads/profile-image - Upload profile image and return image URL."
+        "POST /api/v1/auth/login - Request: {email, password}, Response: 200 OK with {access_token, token_type, user}",
+        "GET /api/v1/users/me - Retrieve authenticated user details after successful login."
       ],
       "database_tables": [
-        "users: id (UUID, primary key), first_name (VARCHAR), last_name (VARCHAR), email (VARCHAR, unique), phone_number (VARCHAR), profile_image_url (TEXT), is_active (BOOLEAN), updated_at (TIMESTAMP)"
+        "users: id (UUID, primary key), first_name (VARCHAR), last_name (VARCHAR), email (VARCHAR, unique), password_hash (VARCHAR), is_active (BOOLEAN), created_at (TIMESTAMP), updated_at (TIMESTAMP)"
       ],
       "validation_rules": [
-        "First name is required and must contain only alphabetic characters.",
-        "Last name is required and must contain only alphabetic characters.",
-        "Phone number must contain exactly 10 digits.",
-        "Uploaded profile images must be JPG, JPEG, or PNG format.",
-        "Maximum image size should not exceed 5 MB."
+        "Email is mandatory and must follow RFC 5322 email format.",
+        "Password is mandatory and must contain a minimum of 8 characters.",
+        "Email and password fields cannot contain only whitespace.",
+        "Login button remains enabled only when required fields are filled."
       ],
       "ui_requirements": [
-        "Display the profile page inside a centered responsive card layout.",
-        "Display the user's profile picture at the top with an edit icon.",
-        "Arrange input fields in a two-column layout on desktop and a single-column layout on mobile devices.",
-        "Display labels above each input field.",
-        "Use rounded input fields with subtle shadows.",
-        "Display Save Changes and Cancel buttons aligned at the bottom-right.",
-        "Display success or error alert messages below the page header.",
+        "Display the login form inside a centered card.",
+        "Place the company logo above the login heading.",
+        "Display the heading 'Welcome Back'.",
+        "Use rounded input fields with placeholder text.",
+        "Provide a password visibility toggle icon.",
+        "Use a primary blue login button with rounded corners.",
+        "Display the 'Remember Me' checkbox on the left and 'Forgot Password?' link on the right.",
         "The page must be fully responsive for desktop, tablet, and mobile devices."
       ],
       "traceability_ids": [
-        "REQ-PROFILE-001",
-        "REQ-PROFILE-002",
-        "REQ-PROFILE-003",
-        "REQ-PROFILE-004"
+        "REQ-LOGIN-001",
+        "REQ-LOGIN-002",
+        "REQ-LOGIN-003",
+        "REQ-LOGIN-004"
       ]
     }
   ]

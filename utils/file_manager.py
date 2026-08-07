@@ -69,7 +69,7 @@ class FileManager:
 
     @property
     def shared_components_dir(self) -> Path:
-        return self.react_src_dir
+        return self.react_src_dir / "components" / "shared"
 
     # ------------------------------------------------------------------
     # Story folder

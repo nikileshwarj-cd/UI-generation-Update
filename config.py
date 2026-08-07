@@ -55,8 +55,33 @@ def _get_bool(key: str, default: bool = False) -> bool:
 
 @dataclass
 class Settings:
-    # Groq
-    groq_api_key: str = field(default_factory=lambda: _require("GROQ_API_KEY"))
+    # API Keys
+    openrouter_api_key: str = field(default_factory=lambda: _get("OPENROUTER_API_KEY"))
+    openai_api_key: str = field(default_factory=lambda: _get("OPENAI_API_KEY"))
+    groq_api_key: str = field(default_factory=lambda: _get("GROQ_API_KEY"))
+
+    @property
+    def api_key(self) -> str:
+        key = self.openrouter_api_key or self.openai_api_key or self.groq_api_key or _get("OPENROUTER_API_KEY") or _get("OPENAI_API_KEY") or _get("GROQ_API_KEY")
+        if not key:
+            print(
+                "\n[CONFIG ERROR] No API key found (OPENROUTER_API_KEY, OPENAI_API_KEY, or GROQ_API_KEY).\n"
+                "  → Copy .env.example to .env and set your API key.\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return key
+
+    @property
+    def provider(self) -> str:
+        forced = _get("LLM_PROVIDER").lower()
+        if forced in ("openrouter", "openai", "groq"):
+            return forced
+        if self.openrouter_api_key or "/" in self.vision_model or "/" in self.code_model:
+            return "openrouter"
+        if self.openai_api_key:
+            return "openai"
+        return "groq"
 
     @property
     def groq_api_keys(self) -> list[str]:
@@ -67,7 +92,7 @@ class Settings:
                 return keys
 
         keys = []
-        primary = _get("GROQ_API_KEY")
+        primary = _get("GROQ_API_KEY") or self.groq_api_key
         if primary:
             keys.append(primary)
 
@@ -81,11 +106,11 @@ class Settings:
     # Models — loaded lazily so tests can override env before import
     vision_model: str = field(
         default_factory=lambda: _get(
-            "VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"
+            "VISION_MODEL", "openrouter/free"
         )
     )
     code_model: str = field(
-        default_factory=lambda: _get("CODE_MODEL", "llama-3.3-70b-versatile")
+        default_factory=lambda: _get("CODE_MODEL", "openai/gpt-4o-mini")
     )
 
     # Output
@@ -106,14 +131,22 @@ class Settings:
         default_factory=lambda: _get_int("MAX_JSON_RETRIES", 3)
     )
 
+    # Token budgets — tune these to match your LLM plan
+    max_tokens_code: int = field(
+        default_factory=lambda: _get_int("MAX_TOKENS_CODE", 6000)
+    )
+    max_tokens_vision: int = field(
+        default_factory=lambda: _get_int("MAX_TOKENS_VISION", 4000)
+    )
+
     # Paths
     project_root: Path = field(default_factory=lambda: _ROOT)
     input_dir: Path = field(default_factory=lambda: _ROOT / "input")
     prompts_dir: Path = field(default_factory=lambda: _ROOT / "prompts")
 
     def __post_init__(self) -> None:
-        # Validate output language
-        if self.output_language not in ("tsx", "jsx"):
+        # Validate output language/framework
+        if self.output_language not in ("tsx", "jsx", "angular"):
             print(
                 f"[CONFIG WARNING] OUTPUT_LANGUAGE='{self.output_language}' is not "
                 f"recognised. Defaulting to 'tsx'.",
@@ -129,9 +162,13 @@ class Settings:
     def reload(self) -> None:
         """Reload configuration from .env file."""
         load_dotenv(_ROOT / ".env", override=True)
-        self.groq_api_key = _require("GROQ_API_KEY")
-        self.vision_model = _get("VISION_MODEL", "llama-3.2-11b-vision-preview")
-        self.code_model = _get("CODE_MODEL", "llama-3.3-70b-versatile")
+        self.openrouter_api_key = _get("OPENROUTER_API_KEY")
+        self.openai_api_key = _get("OPENAI_API_KEY")
+        self.groq_api_key = _get("GROQ_API_KEY")
+        self.vision_model = _get("VISION_MODEL", "openrouter/free")
+        self.code_model = _get("CODE_MODEL", "openai/gpt-4o-mini")
+        self.max_tokens_code = _get_int("MAX_TOKENS_CODE", 6000)
+        self.max_tokens_vision = _get_int("MAX_TOKENS_VISION", 4000)
 
     @property
     def file_extension(self) -> str:

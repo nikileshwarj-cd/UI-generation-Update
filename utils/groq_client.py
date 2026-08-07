@@ -22,23 +22,34 @@ from rich.console import Console
 from config import settings
 from utils.json_utils import strip_fences
 
+import json
+import urllib.request
+import urllib.error
+
 console = Console()
 
 
 class GroqClient:
-    """Initialises the Groq SDK and provides chat/vision helpers."""
+    """Initialises the LLM SDK (Groq or OpenRouter) and provides chat/vision helpers."""
 
     def __init__(self) -> None:
-        self._api_keys = settings.groq_api_keys
-        self._current_key_idx = 0
-        if not self._api_keys:
-            console.print(
-                "[bold red][GroqClient] No GROQ_API_KEY configured.[/bold red]"
-            )
-            sys.exit(1)
-        self._init_client()
+        self.provider = settings.provider
+        if self.provider == "openrouter":
+            self._openrouter_key = settings.openrouter_api_key or settings.api_key
+            console.print(f"[green][LLMClient] Using OpenRouter API (Vision: {settings.vision_model} | Code: {settings.code_model})[/green]")
+        else:
+            self._api_keys = settings.groq_api_keys
+            self._current_key_idx = 0
+            if not self._api_keys:
+                console.print(
+                    "[bold red][GroqClient] Neither OPENROUTER_API_KEY nor GROQ_API_KEY is configured.[/bold red]"
+                )
+                sys.exit(1)
+            self._init_client()
 
     def _init_client(self) -> None:
+        if settings.provider == "openrouter":
+            return
         current_key = self._api_keys[self._current_key_idx]
         try:
             self._client = Groq(api_key=current_key)
@@ -49,7 +60,7 @@ class GroqClient:
             sys.exit(1)
 
     def _switch_to_next_key(self, reason: str = "RateLimit / Token limit hit") -> bool:
-        if self._current_key_idx + 1 < len(self._api_keys):
+        if settings.provider == "groq" and self._current_key_idx + 1 < len(self._api_keys):
             self._current_key_idx += 1
             console.print(
                 f"[bold yellow][GroqClient] {reason}. Switching to fallback API Key #{self._current_key_idx + 1}...[/bold yellow]"
@@ -82,41 +93,29 @@ class GroqClient:
     # Vision Completion
     # ------------------------------------------------------------------
 
-    # Total TPM budget per request (kept safely below the 8K free-tier limit)
+    # Total TPM budget per request
     _TPM_BUDGET: int = 7500
-    # Tokens reserved for the model's output response (4000 tokens prevents truncation on complex UI specs)
     _OUTPUT_TOKENS: int = 4000
-    # Tokens reserved for system + user text prompts (rough upper bound)
     _PROMPT_OVERHEAD: int = 500
-    # Max tokens the image itself may consume
-    # = 7500 - 4000 (output) - 500 (prompts) = 3000
     _IMAGE_TOKEN_BUDGET: int = _TPM_BUDGET - _OUTPUT_TOKENS - _PROMPT_OVERHEAD
-
-    # Vision models charge roughly 1 token per ~750 bytes of base64 payload.
-    # This constant lets us estimate tokens from the encoded image size.
     _BYTES_PER_TOKEN: int = 750
 
     def _optimize_image(self, image_path: Path) -> tuple[str, str]:
         """
         Load, resize-if-needed, and base64-encode the image so that its
-        estimated token count stays within _IMAGE_TOKEN_BUDGET.
-
+        estimated token count stays within budget.
         Returns (base64_data, mime_type).
         """
         img = Image.open(image_path).convert("RGB")
         orig_w, orig_h = img.size
 
-        # Start with the original size and shrink by 10 % each iteration
-        # until the encoded payload fits the token budget.
         scale = 1.0
         while True:
             new_w = max(1, int(orig_w * scale))
             new_h = max(1, int(orig_h * scale))
 
-            # Resize using high-quality LANCZOS filter
             resized = img.resize((new_w, new_h), Image.LANCZOS)
 
-            # Encode to JPEG in memory (JPEG is ~3-5x smaller than PNG)
             buffer = io.BytesIO()
             resized.save(buffer, format="JPEG", quality=85, optimize=True)
             encoded_bytes = buffer.getvalue()
@@ -127,23 +126,21 @@ class GroqClient:
             if estimated_tokens <= self._IMAGE_TOKEN_BUDGET:
                 if scale < 1.0:
                     console.print(
-                        f"  [cyan][GroqClient] Image optimized: "
+                        f"  [cyan][LLMClient] Image optimized: "
                         f"{orig_w}x{orig_h} → {new_w}x{new_h} "
                         f"(~{estimated_tokens} img tokens)[/cyan]"
                     )
                 else:
                     console.print(
-                        f"  [green][GroqClient] Image OK: "
+                        f"  [green][LLMClient] Image OK: "
                         f"{orig_w}x{orig_h} (~{estimated_tokens} img tokens)[/green]"
                     )
                 return b64_data, "image/jpeg"
 
-            # Reduce by 10 % and try again
             scale -= 0.10
             if scale <= 0.05:
-                # Last resort: 5 % of original — always fits
                 console.print(
-                    "[yellow][GroqClient] Image was very large; "
+                    "[yellow][LLMClient] Image was very large; "
                     "reduced to minimum safe size.[/yellow]"
                 )
                 return b64_data, "image/jpeg"
@@ -155,13 +152,13 @@ class GroqClient:
         image_path: Path,
         model: Optional[str] = None,
         temperature: float = 0.2,
-        # Capped at _OUTPUT_TOKENS to guarantee we stay within the TPM budget
-        max_tokens: int = _OUTPUT_TOKENS,
+        max_tokens: Optional[int] = None,
     ) -> str:
-        """Send a vision request with an image optimized to fit within 7 500 TPM."""
+        """Send a vision request with an image."""
         model = model or settings.vision_model
+        if max_tokens is None:
+            max_tokens = settings.max_tokens_vision
 
-        # Resize the image if needed and get its base64 encoding
         image_data, mime = self._optimize_image(image_path)
 
         messages = [
@@ -182,10 +179,128 @@ class GroqClient:
         return self._call(model, messages, temperature, max_tokens)
 
     # ------------------------------------------------------------------
-    # Internal call with retry
+    # Internal call dispatcher
     # ------------------------------------------------------------------
 
     def _call(
+        self,
+        model: str,
+        messages: list,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        if settings.provider == "openrouter":
+            try:
+                return self._call_openrouter(model, messages, temperature, max_tokens)
+            except Exception as e:
+                # If OpenRouter fails, automatically failover to Groq with Qwen
+                if settings.groq_api_keys:
+                    console.print(f"[bold yellow][GroqClient] OpenRouter API failed ({e}). Falling back to Groq and Qwen...[/bold yellow]")
+                    has_image = any(isinstance(msg.get("content"), list) for msg in messages)
+                    # Use llama vision for images (since Groq doesn't host Qwen vision), and qwen-2.5-coder-32b for code
+                    fallback_model = "llama-3.2-11b-vision-preview" if has_image else "qwen-2.5-coder-32b"
+                    
+                    if not hasattr(self, "_client"):
+                        self._api_keys = settings.groq_api_keys
+                        self._current_key_idx = 0
+                        self._init_client()
+                        
+                    return self._call_groq(fallback_model, messages, temperature, max_tokens)
+                raise
+        elif settings.provider == "openai":
+            return self._call_openai(model, messages, temperature, max_tokens)
+        else:
+            return self._call_groq(model, messages, temperature, max_tokens)
+
+    def _call_openai(
+        self,
+        model: str,
+        messages: list,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        api_key = settings.openai_api_key or settings.api_key
+        # Strip provider prefix if user passed openai/gpt-4o-mini directly to OpenAI API
+        clean_model = model.replace("openai/", "")
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": clean_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        return self._http_post(url, headers, payload)
+
+    def _call_openrouter(
+        self,
+        model: str,
+        messages: list,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        api_key = settings.openrouter_api_key or settings.api_key
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:5000",
+            "X-Title": "AI Frontend Generation Agent",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        return self._http_post(url, headers, payload)
+
+    def _http_post(self, url: str, headers: dict, payload: dict) -> str:
+        retries = 3
+        delay = 4.0
+        for attempt in range(1, retries + 1):
+            try:
+                data_bytes = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=180) as response:
+                    res_body = response.read().decode("utf-8")
+                    res_json = json.loads(res_body)
+                    if "choices" in res_json and len(res_json["choices"]) > 0:
+                        content = res_json["choices"][0]["message"]["content"] or ""
+                        return strip_fences(content)
+                    elif "error" in res_json:
+                        err_msg = res_json["error"].get("message", str(res_json["error"]))
+                        console.print(f"[bold red][API Error] {err_msg}[/bold red]")
+                        if attempt < retries:
+                            time.sleep(delay)
+                            continue
+                        raise RuntimeError(f"API Error: {err_msg}")
+            except urllib.error.HTTPError as exc:
+                err_text = ""
+                try:
+                    err_text = exc.read().decode("utf-8")
+                except Exception:
+                    pass
+                console.print(f"[yellow][API Request] HTTP {exc.code}: {exc.reason} - {err_text[:300]}[/yellow]")
+                if exc.code == 429 or exc.code >= 500:
+                    if attempt < retries:
+                        time.sleep(delay)
+                        delay *= 2
+                        continue
+                raise exc
+            except Exception as exc:
+                if attempt < retries:
+                    console.print(f"[yellow][API Request] Network error ({exc}). Retrying {attempt}/{retries}...[/yellow]")
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    console.print(f"[bold red][API Request] Error: {exc}[/bold red]")
+        return ""
+
+    def _call_groq(
         self,
         model: str,
         messages: list,
@@ -244,3 +359,4 @@ class GroqClient:
                 raise
 
         return ""
+

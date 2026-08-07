@@ -74,6 +74,94 @@ def sse_message(event: str, data: dict) -> str:
 def index():
     return render_template("index.html", settings=settings)
 
+# ---------------------------------------------------------------------------
+# Project-Centric SQLite Database APIs
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+db_list_projects = None
+db_create_project = None
+db_get_project_details = None
+db_add_story = None
+db_delete_project = None
+
+try:
+    from services.project_manager import (
+        list_projects as db_list_projects,
+        create_project as db_create_project,
+        get_project_details as db_get_project_details,
+        add_user_story_to_project as db_add_story,
+        delete_project as db_delete_project
+    )
+    from models.project_model import ProjectCreatePayload, AddStoryPayload
+except Exception as err:
+    print(f"[Database Import Warning]: {err}")
+
+@app.route("/api/v1/projects", methods=["GET"])
+def get_projects():
+    """List projects directly from local SQLite Database (code_gene.db)."""
+    if db_list_projects:
+        return jsonify({"projects": db_list_projects()})
+    return jsonify({"projects": []})
+
+@app.route("/api/v1/projects", methods=["POST"])
+def create_project():
+    """Create a new project record in local SQLite Database."""
+    data = request.get_json() or {}
+    if db_create_project:
+        payload = ProjectCreatePayload(
+            projectName=data.get("projectName", "New Project"),
+            framework=data.get("framework", "React"),
+            language=data.get("language", "TypeScript"),
+            cssStrategy=data.get("cssStrategy", "Separate"),
+            folderStructure=data.get("folderStructure", "Feature-based")
+        )
+        res = db_create_project(payload)
+        return jsonify(res)
+    return jsonify({"error": "DB engine not ready"}), 500
+
+@app.route("/api/v1/projects/<project_id>", methods=["GET"])
+def get_project_by_id(project_id):
+    """Retrieve details for a project from SQLite DB."""
+    if db_get_project_details:
+        details = db_get_project_details(project_id)
+        if details:
+            return jsonify(details)
+    return jsonify({"error": "Project not found"}), 404
+
+@app.route("/api/v1/projects/<project_id>", methods=["DELETE"])
+def delete_project_by_id(project_id):
+    """Delete a project from SQLite DB."""
+    if db_delete_project:
+        success = db_delete_project(project_id)
+        if success:
+            return jsonify({"status": "deleted"})
+        return jsonify({"error": "Project not found"}), 404
+    return jsonify({"error": "DB engine not ready"}), 500
+
+@app.route("/api/v1/projects/<project_id>/stories", methods=["POST"])
+def add_story_to_project(project_id):
+    """Add a new user story incrementally to SQLite DB."""
+    story_text = request.form.get("userStory", "").strip()
+    wireframe_file = request.files.get("wireframe")
+
+    if not story_text:
+        return jsonify({"error": "User story is required"}), 400
+        
+    if not wireframe_file:
+        return jsonify({"error": "Wireframe image is mandatory"}), 400
+
+    if db_add_story:
+        try:
+            payload = AddStoryPayload(userStory=story_text)
+            res = db_add_story(project_id, payload)
+            return jsonify(res)
+        except ValueError as err:
+            return jsonify({"error": str(err)}), 404
+
+    return jsonify({"error": "DB engine not ready"}), 500
+
 
 @app.route("/generate", methods=["POST"])
 def generate():
@@ -224,6 +312,8 @@ def generate():
                 val_report = validator.validate(
                     ground_truth_image=image_path,
                     output_path=val_path,
+                    ui_spec_path=ui_spec_path,
+                    react_src_dir=fm.react_src_dir,
                     progress_cb=lambda msg: emit("log", stage=4, message=msg),
                 ) or {}
 

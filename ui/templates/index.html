@@ -1,263 +1,253 @@
+<!--
+ui/templates/index.html — AI Frontend Generation Agent Web UI Template
+Project-Centric Multi-Story Development Platform:
+1. Dashboard View (Create Project & Existing Projects: Banking App, E-Commerce App, Hostel Management)
+2. Create Project Wizard (Tech Stack: Framework, Language, CSS Strategy, Folder Structure)
+3. Project Workspace View (Incremental Story Ingestion, Story Graph US001 -> US002 -> US003, Source Code Viewer, Live UI Preview)
+-->
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description"
-    content="AI-powered Frontend Generation Agent — Upload a UI screenshot and user stories to generate a complete React app." />
-  <title>AI Frontend Generation Agent</title>
+  <title>Code-Gene — Project-Centric Development Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
-    rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css?v=3.0" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 </head>
-
 <body>
-  <!-- ======= BACKGROUND ======= -->
-  <div class="bg-grid" aria-hidden="true"></div>
-  <div class="bg-orbs" aria-hidden="true">
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
-    <div class="orb orb-3"></div>
+  <div class="app-container">
+    <!-- ======= HEADER ======= -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <div>
+          <h1 class="logo-title">Code-Gene IDE</h1>
+          <p class="logo-sub">Project-Centric AI UI-to-Code Platform</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button type="button" class="btn-secondary hidden" id="backToProjectsBtn">
+          <span class="btn-icon">←</span>
+          Back to Projects
+        </button>
+        <button type="button" class="btn-primary" id="headerCreateProjectBtn">
+          <span class="btn-icon">✨</span>
+          Create Project
+        </button>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <!-- ======= SECTION 1: MAIN DASHBOARD (CREATE & EXISTING PROJECTS) ======= -->
+      <section class="dashboard-section" id="projectsDashboardView">
+        <div class="dashboard-hero">
+          <div class="hero-badge">Project-Centric Architecture</div>
+          <h2 class="hero-title">Projects Dashboard</h2>
+          <p class="hero-description">
+            Select an existing project to view its story dependency graph and extend the codebase, or configure a new project tech stack.
+          </p>
+        </div>
+
+        <!-- EXISTING PROJECTS GRID -->
+        <div class="section-title-wrap">
+          <h3>Existing Projects</h3>
+          <span class="badge-count" id="projectCountBadge">3 Projects</span>
+        </div>
+
+        <div class="projects-grid" id="existingProjectsGrid">
+          <!-- Dynamically populated from /api/v1/projects -->
+        </div>
+      </section>
+
+      <!-- ======= SECTION 2: CREATE PROJECT WIZARD MODAL ======= -->
+      <div class="modal-overlay hidden" id="createProjectModalOverlay">
+        <div class="modal-card">
+          <div class="modal-header">
+            <div class="modal-title-wrap">
+              <span class="modal-icon">🛠️</span>
+              <h3>Configure New Project</h3>
+            </div>
+            <button type="button" class="modal-close-btn" id="closeCreateModalBtn" aria-label="Close modal">✕</button>
+          </div>
+
+          <form id="createProjectForm" novalidate>
+            <div class="form-group">
+              <label for="newProjectName" class="form-label">
+                Project Name <span class="required">*</span>
+              </label>
+              <input type="text" id="newProjectName" class="form-input" placeholder="e.g. Banking App" required />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="frameworkSelect" class="form-label">Framework</label>
+                <select id="frameworkSelect" class="form-select">
+                  <option value="React" selected>React</option>
+                  <option value="Angular">Angular</option>
+                  <option value="Vue">Vue</option>
+                </select>
+              </div>
+              <div class="form-group flex-1">
+                <label for="languageSelect" class="form-label">Language</label>
+                <select id="languageSelect" class="form-select">
+                  <option value="TypeScript" selected>TypeScript</option>
+                  <option value="JavaScript">JavaScript</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="cssStrategySelect" class="form-label">Styling / CSS Framework</label>
+                <select id="cssStrategySelect" class="form-select">
+                  <option value="Tailwind CSS (Utility-first)" selected>Tailwind CSS (Utility-first)</option>
+                  <option value="Bootstrap 5 (Class-based components)">Bootstrap 5 (Class-based components)</option>
+                  <option value="MUI / Material UI (Component library)">MUI / Material UI (Component library)</option>
+                </select>
+              </div>
+              <div class="form-group flex-1">
+                <label for="folderStructureSelect" class="form-label">Folder Structure</label>
+                <select id="folderStructureSelect" class="form-select">
+                  <option value="Feature-based" selected>Feature-based</option>
+                  <option value="Component-based">Component-based</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="button" class="btn-secondary" id="cancelCreateBtn">Cancel</button>
+              <button type="submit" class="btn-primary" id="saveProjectConfigBtn">
+                <span class="btn-icon">🚀</span>
+                Initialize Project Workspace
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- ======= SECTION 3: PROJECT DEVELOPMENT WORKSPACE VIEW ======= -->
+      <section class="workspace-section hidden" id="projectWorkspaceView">
+        <div class="workspace-banner">
+          <div class="banner-title-wrap">
+            <span class="pid-badge" id="activeProjectIdBadge"></span>
+            <h2 class="active-project-title" id="activeProjectTitle">No Project Selected</h2>
+          </div>
+          <div class="tech-stack-chips" id="activeTechStackChips">
+            <span class="chip">React</span>
+            <span class="chip">TypeScript</span>
+            <span class="chip">Separate CSS</span>
+            <span class="chip">Feature-based</span>
+          </div>
+        </div>
+
+        <!-- INCREMENTAL USER STORY GENERATION CARD -->
+        <div class="card story-ingestion-card">
+          <div class="story-header">
+            <span class="story-icon">💡</span>
+            <div>
+              <h4>Incremental User Story Generation</h4>
+              <p class="story-sub">Add a new user story to extend the existing codebase without overwriting existing files.</p>
+            </div>
+          </div>
+          <form id="addStoryForm">
+            <div class="form-group">
+              <label for="newUserStory" class="form-label">
+                User Story Description <span class="required">*</span>
+              </label>
+              <textarea id="newUserStory" class="form-textarea" rows="3" placeholder="e.g. As a user, I want to view the dashboard with active session statistics." required></textarea>
+            </div>
+            <div class="story-form-footer">
+              <div class="wireframe-minidrop" id="miniDropzone" style="cursor: pointer; padding: 12px 20px; border: 2px dashed #38bdf8; border-radius: 8px; text-align: center; background: rgba(56, 189, 248, 0.1); margin-right: 15px; transition: all 0.3s ease;" onmouseover="this.style.background='rgba(56, 189, 248, 0.2)'" onmouseout="if(this.style.borderColor !== 'rgb(16, 185, 129)') this.style.background='rgba(56, 189, 248, 0.1)'" onclick="document.getElementById('storyWireframeFile').click()">
+                <span id="wireframeDropzoneText" style="color: #38bdf8; font-weight: 500;">🖼️ Upload Wireframe (Mandatory)</span>
+                <input type="file" id="storyWireframeFile" name="wireframe" accept="image/*" class="file-input-hidden" required style="display: none;" onchange="
+                    const textElem = document.getElementById('wireframeDropzoneText');
+                    const dz = document.getElementById('miniDropzone');
+                    if(this.files && this.files.length > 0) {
+                        textElem.innerHTML = '✅ <strong>' + this.files[0].name + '</strong> Attached!';
+                        textElem.style.color = '#10b981';
+                        dz.style.borderColor = '#10b981';
+                        dz.style.borderStyle = 'solid';
+                        dz.style.background = 'rgba(16, 185, 129, 0.1)';
+                    }
+                " />
+              </div>
+              <button type="submit" class="btn-primary" id="submitStoryBtn">
+                <span class="btn-icon">⚡</span>
+                Generate Story & Extend Project
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- WORKSPACE SUITE TABS -->
+        <div class="suite-tabs">
+          <button type="button" class="tab-btn active" id="tabStoryGraphBtn">Story Dependency Graph (story_graph.json)</button>
+          <button type="button" class="tab-btn" id="tabCodeFilesBtn">Code Base & File Tree</button>
+          <button type="button" class="tab-btn" id="tabLivePreviewBtn">Live UI Preview</button>
+          <button type="button" class="tab-btn" id="tabTraceabilityBtn">Traceability Matrix</button>
+        </div>
+
+        <!-- TAB 1: STORY DEPENDENCY GRAPH -->
+        <div class="tab-content active" id="tabStoryGraphContent">
+          <div class="graph-wrap">
+            <h4 class="graph-title">Story Dependency Tree (US001 ➔ US002 ➔ US003)</h4>
+            <div class="mermaid" id="storyMermaidContainer">
+              graph TD;
+              US001[US001: Login] --> US002[US002: Dashboard];
+              US001 --> US003[US003: Profile];
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 2: CODE BASE FILE TREE & SOURCE VIEWER -->
+        <div class="tab-content hidden" id="tabCodeFilesContent">
+          <div class="code-workspace-split">
+            <div class="file-tree-panel">
+              <h5>Project Files</h5>
+              <ul class="file-tree-list" id="fileTreeList">
+                <li>src/App.tsx</li>
+                <li>src/features/login/Login.tsx</li>
+              </ul>
+            </div>
+            <div class="code-viewer-panel">
+              <pre><code id="activeCodeDisplay">Select a file to view code...</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 3: LIVE PREVIEW IFRAME -->
+        <div class="tab-content hidden" id="tabLivePreviewContent">
+          <div class="preview-iframe-wrap">
+            <iframe id="workspacePreviewIframe" src="about:blank" title="Live Component Sandbox"></iframe>
+          </div>
+        </div>
+
+        <!-- TAB 4: TRACEABILITY MATRIX -->
+        <div class="tab-content hidden" id="tabTraceabilityContent">
+          <div class="traceability-wrap">
+            <table class="matrix-table">
+              <thead>
+                <tr>
+                  <th>Story ID</th>
+                  <th>Title</th>
+                  <th>Generated Component</th>
+                  <th>Dependencies</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="storyMatrixTbody">
+                <tr><td colspan="5">Loading story matrix...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
 
-  <!-- ======= HEADER ======= -->
-  <header class="site-header">
-    <div class="header-inner">
-      <div class="logo">
-        <span class="logo-icon" aria-hidden="true">⚡</span>
-        <div>
-          <span class="logo-title">AI Frontend Agent</span>
-          <span class="logo-sub">Powered by Groq × React × Vite</span>
-        </div>
-      </div>
-      <div class="header-badges">
-        <span class="badge badge-groq">Groq API</span>
-        <span class="badge badge-react">React</span>
-        <span class="badge badge-vite">Vite</span>
-      </div>
-    </div>
-  </header>
-
-  <!-- ======= MAIN ======= -->
-  <main class="main-content">
-
-    <!-- LEFT COLUMN: INPUT FORM -->
-    <section class="card input-card" id="input-panel" aria-label="Generation Inputs">
-      <div class="card-header">
-        <h1 class="card-title">
-          <span class="step-num">01</span>
-          Configure Generation
-        </h1>
-        <p class="card-subtitle">Upload your UI screenshot and user stories to generate a React app.</p>
-      </div>
-
-      <form id="gen-form" novalidate>
-
-        <!-- Image Upload -->
-        <div class="form-group" id="image-group">
-          <label class="form-label" for="image-input">
-            Reference UI Screenshot
-            <span class="required" aria-label="required">*</span>
-          </label>
-          <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Drop or click to upload image">
-            <div class="dropzone-icon" aria-hidden="true">🖼️</div>
-            <div class="dropzone-text">
-              <span class="dz-primary">Drop your UI screenshot here</span>
-              <span class="dz-secondary">or click to browse — PNG, JPG, WEBP</span>
-            </div>
-            <input type="file" id="image-input" name="image" accept=".png,.jpg,.jpeg,.webp" class="file-hidden"
-              aria-label="Upload screenshot" />
-          </div>
-          <div class="image-preview-wrap" id="image-preview-wrap" hidden>
-            <img id="image-preview" class="image-preview" alt="Preview of uploaded screenshot" />
-            <button type="button" class="preview-remove" id="preview-remove" aria-label="Remove image">✕</button>
-          </div>
-        </div>
-
-        <!-- User Stories JSON -->
-        <div class="form-group" id="stories-group">
-          <label class="form-label" for="stories-textarea">
-            User Stories (JSON)
-            <span class="required" aria-label="required">*</span>
-          </label>
-          <div class="textarea-toolbar">
-            <button type="button" class="toolbar-btn" id="load-sample-btn" title="Load sample stories">Load
-              Sample</button>
-            <button type="button" class="toolbar-btn" id="format-json-btn" title="Format JSON">Format JSON</button>
-          </div>
-          <textarea id="stories-textarea" name="stories" class="json-textarea" rows="12" placeholder='[
-  {
-    "id": "US101",
-    "title": "User Login",
-    "description": "As a user, I want to log in with my email and password.",
-    "acceptanceCriteria": [
-      "Email field validates format",
-      "Password field is masked",
-      "Login button submits the form"
-    ]
-  }
-]' spellcheck="false" aria-label="User stories in JSON format"></textarea>
-          <div class="json-status" id="json-status" aria-live="polite"></div>
-        </div>
-
-        <!-- Project Settings -->
-        <div class="form-row">
-          <div class="form-group flex-1">
-            <label class="form-label" for="project-name">Project Name</label>
-            <input type="text" id="project-name" name="project" class="form-input" value="project_1"
-              placeholder="project_1" aria-label="Project name" />
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="output-lang">Output Language</label>
-            <div class="lang-toggle" role="group" aria-label="Output language">
-              <button type="button" class="lang-btn active" id="lang-tsx" data-lang="tsx"
-                aria-pressed="true">TSX</button>
-              <button type="button" class="lang-btn" id="lang-jsx" data-lang="jsx" aria-pressed="false">JSX</button>
-            </div>
-            <input type="hidden" id="lang-input" name="lang" value="tsx" />
-          </div>
-        </div>
-
-        <!-- Submit -->
-        <button type="submit" class="btn-generate" id="generate-btn" aria-label="Start generation pipeline">
-          <span class="btn-icon" aria-hidden="true">⚡</span>
-          <span class="btn-text">Generate Frontend</span>
-          <span class="btn-spinner" id="btn-spinner" hidden aria-hidden="true"></span>
-        </button>
-
-      </form>
-    </section>
-
-    <!-- RIGHT COLUMN: PIPELINE + RESULTS -->
-    <div class="right-col">
-
-      <!-- Pipeline Progress -->
-      <section class="card pipeline-card" id="pipeline-panel" aria-label="Pipeline Progress" aria-live="polite">
-        <div class="card-header">
-          <h2 class="card-title">
-            <span class="step-num">02</span>
-            Pipeline Progress
-          </h2>
-          <div class="pipeline-total" id="pipeline-total" hidden>
-            Total: <span id="total-elapsed">00:00</span>
-          </div>
-        </div>
-
-        <div class="pipeline-stages" id="pipeline-stages">
-          <!-- Stage 1 -->
-          <div class="stage-item" id="stage-1" data-stage="1">
-            <div class="stage-header">
-              <div class="stage-icon pending" id="stage-1-icon" aria-hidden="true">○</div>
-              <div class="stage-info">
-                <div class="stage-name">Stage 1 — Image Analysis</div>
-                <div class="stage-desc">Vision model analyzes UI screenshot → <code>ui_spec.json</code></div>
-              </div>
-              <div class="stage-time" id="stage-1-time">—</div>
-            </div>
-            <div class="stage-bar-wrap" id="stage-1-bar-wrap">
-              <div class="stage-bar" id="stage-1-bar"></div>
-            </div>
-            <div class="stage-log" id="stage-1-log" aria-live="polite"></div>
-          </div>
-
-          <!-- Stage 2 -->
-          <div class="stage-item" id="stage-2" data-stage="2">
-            <div class="stage-header">
-              <div class="stage-icon pending" id="stage-2-icon" aria-hidden="true">○</div>
-              <div class="stage-info">
-                <div class="stage-name">Stage 2 — Story Mapping</div>
-                <div class="stage-desc">Maps user stories to UI elements → <code>story_ui_mapping.json</code></div>
-              </div>
-              <div class="stage-time" id="stage-2-time">—</div>
-            </div>
-            <div class="stage-bar-wrap" id="stage-2-bar-wrap">
-              <div class="stage-bar" id="stage-2-bar"></div>
-            </div>
-            <div class="stage-log" id="stage-2-log" aria-live="polite"></div>
-          </div>
-
-          <!-- Stage 3 -->
-          <div class="stage-item" id="stage-3" data-stage="3">
-            <div class="stage-header">
-              <div class="stage-icon pending" id="stage-3-icon" aria-hidden="true">○</div>
-              <div class="stage-info">
-                <div class="stage-name">Stage 3 — Code Generation</div>
-                <div class="stage-desc">Generates React/Vite project, HTML, CSS → runnable app</div>
-              </div>
-              <div class="stage-time" id="stage-3-time">—</div>
-            </div>
-            <div class="stage-bar-wrap" id="stage-3-bar-wrap">
-              <div class="stage-bar" id="stage-3-bar"></div>
-            </div>
-            <div class="stage-log" id="stage-3-log" aria-live="polite"></div>
-          </div>
-
-          <!-- Stage 4 -->
-          <div class="stage-item" id="stage-4" data-stage="4">
-            <div class="stage-header">
-              <div class="stage-icon pending" id="stage-4-icon" aria-hidden="true">○</div>
-              <div class="stage-info">
-                <div class="stage-name">Stage 4 — UI Validation & Refinement</div>
-                <div class="stage-desc">Visual comparison & pixel-perfect regeneration → <code>validation_report.json</code></div>
-              </div>
-              <div class="stage-time" id="stage-4-time">—</div>
-            </div>
-            <div class="stage-bar-wrap" id="stage-4-bar-wrap">
-              <div class="stage-bar" id="stage-4-bar"></div>
-            </div>
-            <div class="stage-log" id="stage-4-log" aria-live="polite"></div>
-          </div>
-        </div>
-
-        <!-- Idle placeholder -->
-        <div class="pipeline-idle" id="pipeline-idle">
-          <div class="idle-icon" aria-hidden="true">🤖</div>
-          <p>Fill in the form and click <strong>Generate Frontend</strong> to start the pipeline.</p>
-        </div>
-      </section>
-
-      <!-- Results -->
-      <section class="card results-card" id="results-panel" aria-label="Generation Results">
-        <div class="card-header">
-          <h2 class="card-title">
-            <span class="step-num success">03</span>
-            Results
-          </h2>
-          <div class="coverage-badge" id="coverage-badge"></div>
-        </div>
-
-        <div class="results-body">
-          <div class="result-command-wrap">
-            <p class="result-run-label">Run your generated app:</p>
-            <div class="command-box" id="command-box">
-              <code id="run-command">cd output/my-generated-app &amp;&amp; npm install &amp;&amp; npm run dev</code>
-              <button class="copy-btn" id="copy-btn" aria-label="Copy command">Copy</button>
-            </div>
-          </div>
-
-          <div class="file-tree-wrap">
-            <div class="file-tree-header">
-              <span>📁 Generated File Tree</span>
-            </div>
-            <pre class="file-tree" id="file-tree"></pre>
-          </div>
-        </div>
-      </section>
-
-    </div><!-- /right-col -->
-
-  </main>
-
-  <!-- ======= FOOTER ======= -->
-  <footer class="site-footer">
-    <p>AI Frontend Generation Agent · Groq API · React · Vite · Python 3.11</p>
-  </footer>
-
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2.0"></script>
 </body>
-
 </html>

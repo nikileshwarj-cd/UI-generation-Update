@@ -63,17 +63,35 @@ class ImageAnalyzer:
             "Be thorough and concise — capture all structural containers and visible elements."
         )
 
-        emit(f"Sending to vision model: {settings.vision_model}")
-        raw_response = self._client.vision(
-            system_prompt=self._system_prompt,
-            user_text=user_prompt,
-            image_path=image_path,
-        )
+        v_models = [settings.vision_model]
+        if settings.provider in ("openrouter", "openai"):
+            v_models.extend(["openrouter/free", "qwen/qwen-2.5-vl-72b-instruct:free", "meta-llama/llama-3.2-11b-vision-instruct:free", "google/gemini-2.0-flash-exp:free"])
+        v_models = list(dict.fromkeys([m for m in v_models if m]))
 
-        emit("Parsing vision model response...")
-        spec = self._parse_response(raw_response, image_path.name)
+        raw_response = ""
+        spec = None
+        for v_model in v_models:
+            emit(f"Sending to vision model: {v_model}...")
+            try:
+                raw_response = self._client.vision(
+                    system_prompt=self._system_prompt,
+                    user_text=user_prompt,
+                    image_path=image_path,
+                    model=v_model,
+                )
+                if raw_response and raw_response.strip():
+                    emit(f"Parsing response from {v_model}...")
+                    spec = self._parse_response(raw_response, image_path.name)
+                    if spec is not None:
+                        break
+                    else:
+                        emit(f"  [WARN] Vision model '{v_model}' returned invalid JSON. Trying fallback...")
+            except Exception as exc:
+                emit(f"  [WARN] Vision model '{v_model}' failed: {exc}. Trying fallback...")
+                continue
+
         if spec is None:
-            emit("[ERROR] Failed to parse UI spec from model response.")
+            emit("[ERROR] Failed to parse UI spec from any vision model response.")
             return None
 
         # Patch sourceImage

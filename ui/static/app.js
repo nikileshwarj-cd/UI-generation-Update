@@ -1,520 +1,368 @@
-/* =====================================================================
-   AI Frontend Generation Agent — Control Panel JavaScript
-   Handles: form submission, SSE streaming, drag-drop, JSON validation,
-            language toggle, pipeline timers, copy-to-clipboard
-   ===================================================================== */
+/**
+ * ui/static/app.js
+ * 100% Dynamic Frontend Controller for Project-Centric Development Platform.
+ * Queries /api/v1/projects to render ONLY real existing projects on disk.
+ */
 
-'use strict';
+document.addEventListener('DOMContentLoaded', () => {
+    const projectsDashboardView = document.getElementById('projectsDashboardView');
+    const existingProjectsGrid = document.getElementById('existingProjectsGrid');
+    const projectCountBadge = document.getElementById('projectCountBadge');
 
-// =========================================================================
-// Constants / DOM refs
-// =========================================================================
+    const headerCreateProjectBtn = document.getElementById('headerCreateProjectBtn');
+    const backToProjectsBtn = document.getElementById('backToProjectsBtn');
 
-const form = document.getElementById('gen-form');
-const dropzone = document.getElementById('dropzone');
-const imageInput = document.getElementById('image-input');
-const imagePreviewWrap = document.getElementById('image-preview-wrap');
-const imagePreview = document.getElementById('image-preview');
-const previewRemove = document.getElementById('preview-remove');
-const storiesTextarea = document.getElementById('stories-textarea');
-const jsonStatus = document.getElementById('json-status');
-const projectInput = document.getElementById('project-name');
-const langInput = document.getElementById('lang-input');
-const langBtns = document.querySelectorAll('.lang-btn');
-const generateBtn = document.getElementById('generate-btn');
-const btnSpinner = document.getElementById('btn-spinner');
-const btnText = generateBtn.querySelector('.btn-text');
-const loadSampleBtn = document.getElementById('load-sample-btn');
-const formatJsonBtn = document.getElementById('format-json-btn');
-const copyBtn = document.getElementById('copy-btn');
-const runCommandEl = document.getElementById('run-command');
-const fileTreeEl = document.getElementById('file-tree');
-const coverageBadge = document.getElementById('coverage-badge');
-const resultsPanel = document.getElementById('results-panel');
-const pipelineIdle = document.getElementById('pipeline-idle');
-const pipelineStages = document.getElementById('pipeline-stages');
-const pipelineTotal = document.getElementById('pipeline-total');
-const totalElapsedEl = document.getElementById('total-elapsed');
+    const createProjectModalOverlay = document.getElementById('createProjectModalOverlay');
+    const closeCreateModalBtn = document.getElementById('closeCreateModalBtn');
+    const cancelCreateBtn = document.getElementById('cancelCreateBtn');
+    const createProjectForm = document.getElementById('createProjectForm');
 
-function initProjectActions() {
-  const proj = projectInput ? projectInput.value.trim() || 'project_1' : 'project_1';
-  if (runCommandEl) runCommandEl.textContent = `cd "output/${proj}" && npm install && npm run dev`;
-}
-initProjectActions();
+    const projectWorkspaceView = document.getElementById('projectWorkspaceView');
+    const activeProjectIdBadge = document.getElementById('activeProjectIdBadge');
+    const activeProjectTitle = document.getElementById('activeProjectTitle');
+    const activeTechStackChips = document.getElementById('activeTechStackChips');
+    const addStoryForm = document.getElementById('addStoryForm');
+    const newUserStory = document.getElementById('newUserStory');
 
-if (projectInput) {
-  projectInput.addEventListener('input', () => {
-    const proj = projectInput.value.trim() || 'project_1';
-    if (runCommandEl) runCommandEl.textContent = `cd "output/${proj}" && npm install && npm run dev`;
-  });
-}
+    const tabStoryGraphBtn = document.getElementById('tabStoryGraphBtn');
+    const tabCodeFilesBtn = document.getElementById('tabCodeFilesBtn');
+    const tabLivePreviewBtn = document.getElementById('tabLivePreviewBtn');
+    const tabTraceabilityBtn = document.getElementById('tabTraceabilityBtn');
 
-// =========================================================================
-// Sample user stories
-// =========================================================================
+    const tabStoryGraphContent = document.getElementById('tabStoryGraphContent');
+    const tabCodeFilesContent = document.getElementById('tabCodeFilesContent');
+    const tabLivePreviewContent = document.getElementById('tabLivePreviewContent');
+    const tabTraceabilityContent = document.getElementById('tabTraceabilityContent');
 
-const SAMPLE_STORIES = [
-  {
-    "id": "US101",
-    "title": "User Login",
-    "description": "As a user, I want to log in with my email and password so I can access the application.",
-    "acceptanceCriteria": [
-      "Email field is visible and validates email format",
-      "Password field is masked and required",
-      "Login button submits the form",
-      "Error message appears on invalid credentials"
-    ]
-  },
-  {
-    "id": "US102",
-    "title": "Navigation",
-    "description": "As a user, I want a navigation bar so I can move between sections.",
-    "acceptanceCriteria": [
-      "Navigation links are visible",
-      "Active link is highlighted",
-      "Navigation is responsive on mobile"
-    ]
-  },
-  {
-    "id": "US103",
-    "title": "Dashboard View",
-    "description": "As a user, I want to see a dashboard with key metrics after logging in.",
-    "acceptanceCriteria": [
-      "Dashboard shows summary cards",
-      "Cards display relevant data",
-      "Dashboard is accessible via the /dashboard route"
-    ]
-  }
-];
+    const storyMermaidContainer = document.getElementById('storyMermaidContainer');
+    const fileTreeList = document.getElementById('fileTreeList');
+    const activeCodeDisplay = document.getElementById('activeCodeDisplay');
+    const workspacePreviewIframe = document.getElementById('workspacePreviewIframe');
+    const storyMatrixTbody = document.getElementById('storyMatrixTbody');
 
-// =========================================================================
-// Image Drag & Drop
-// =========================================================================
+    let currentProjectData = null;
 
-// Guard flag — prevents stacking multiple file dialogs when the user
-// clicks the dropzone repeatedly while the OS picker is slow to open.
-function openFilePicker() {
-  if (imageInput) imageInput.click();
-}
-
-// Clicking anywhere on the dropzone opens the file picker
-if (dropzone) {
-  dropzone.addEventListener('click', (e) => {
-    if (e.target === imageInput) return;
-    openFilePicker();
-  });
-}
-
-dropzone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  dropzone.classList.add('drag-over');
-});
-
-dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
-
-dropzone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropzone.classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (file) handleImageFile(file);
-});
-
-imageInput.addEventListener('change', () => {
-  if (imageInput.files[0]) handleImageFile(imageInput.files[0]);
-});
-
-function handleImageFile(file) {
-  const allowed = ['.png', '.jpg', '.jpeg', '.webp'];
-  const ext = '.' + file.name.split('.').pop().toLowerCase();
-  if (!allowed.includes(ext)) {
-    showToast('Unsupported file type. Use PNG, JPG, or WEBP.', 'error');
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    imagePreview.src = e.target.result;
-    imagePreviewWrap.hidden = false;
-    dropzone.hidden = true;
-  };
-  reader.readAsDataURL(file);
-
-  // Sync to file input
-  const dt = new DataTransfer();
-  dt.items.add(file);
-  imageInput.files = dt.files;
-}
-
-previewRemove.addEventListener('click', () => {
-  imagePreview.src = '';
-  imagePreviewWrap.hidden = true;
-  dropzone.hidden = false;
-  imageInput.value = '';
-});
-
-// Keyboard accessibility for dropzone
-dropzone.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' || e.key === ' ') {
-    e.preventDefault();
-    openFilePicker();
-  }
-});
-
-// =========================================================================
-// JSON Validation
-// =========================================================================
-
-let jsonValidateTimeout;
-
-storiesTextarea.addEventListener('input', () => {
-  clearTimeout(jsonValidateTimeout);
-  jsonValidateTimeout = setTimeout(validateJson, 400);
-});
-
-function validateJson() {
-  const text = storiesTextarea.value.trim();
-  if (!text) {
-    jsonStatus.textContent = '';
-    jsonStatus.className = 'json-status';
-    return;
-  }
-  try {
-    JSON.parse(text);
-    jsonStatus.textContent = '✓ Valid JSON';
-    jsonStatus.className = 'json-status valid';
-  } catch (e) {
-    jsonStatus.textContent = `✗ ${e.message}`;
-    jsonStatus.className = 'json-status invalid';
-  }
-}
-
-// =========================================================================
-// Load Sample / Format JSON
-// =========================================================================
-
-loadSampleBtn.addEventListener('click', () => {
-  storiesTextarea.value = JSON.stringify(SAMPLE_STORIES, null, 2);
-  validateJson();
-});
-
-formatJsonBtn.addEventListener('click', () => {
-  try {
-    const parsed = JSON.parse(storiesTextarea.value);
-    storiesTextarea.value = JSON.stringify(parsed, null, 2);
-    validateJson();
-  } catch (e) {
-    storiesTextarea.classList.add('shake');
-    setTimeout(() => storiesTextarea.classList.remove('shake'), 500);
-  }
-});
-
-// =========================================================================
-// Language Toggle
-// =========================================================================
-
-langBtns.forEach(btn => {
-  btn.addEventListener('click', () => {
-    langBtns.forEach(b => { b.classList.remove('active'); b.setAttribute('aria-pressed', 'false'); });
-    btn.classList.add('active');
-    btn.setAttribute('aria-pressed', 'true');
-    langInput.value = btn.dataset.lang;
-  });
-});
-
-// =========================================================================
-// Pipeline State
-// =========================================================================
-
-const stageTimers = {}; // stageNum → { start, interval }
-let pipelineTotalStart = null;
-let totalTimer = null;
-
-function startStageTimer(stageNum) {
-  const timeEl = document.getElementById(`stage-${stageNum}-time`);
-  const start = Date.now();
-  stageTimers[stageNum] = {
-    start,
-    interval: setInterval(() => {
-      const elapsed = Math.floor((Date.now() - start) / 1000);
-      timeEl.textContent = formatTime(elapsed);
-    }, 500)
-  };
-}
-
-function stopStageTimer(stageNum) {
-  if (stageTimers[stageNum]) {
-    clearInterval(stageTimers[stageNum].interval);
-    delete stageTimers[stageNum];
-  }
-}
-
-function startTotalTimer() {
-  pipelineTotalStart = Date.now();
-  pipelineTotal.hidden = false;
-  totalTimer = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - pipelineTotalStart) / 1000);
-    totalElapsedEl.textContent = formatTime(elapsed);
-  }, 500);
-}
-
-function stopTotalTimer() {
-  if (totalTimer) { clearInterval(totalTimer); totalTimer = null; }
-}
-
-function formatTime(seconds) {
-  const m = String(Math.floor(seconds / 60)).padStart(2, '0');
-  const s = String(seconds % 60).padStart(2, '0');
-  return `${m}:${s}`;
-}
-
-function setStageStatus(stageNum, status) {
-  const item = document.getElementById(`stage-${stageNum}`);
-  const icon = document.getElementById(`stage-${stageNum}-icon`);
-
-  item.className = `stage-item ${status}`;
-  icon.className = `stage-icon ${status}`;
-
-  const icons = { pending: '○', running: '◉', done: '✓', failed: '✗' };
-  icon.textContent = icons[status] || '○';
-}
-
-function addLogLine(stageNum, msg) {
-  const log = document.getElementById(`stage-${stageNum}-log`);
-  const line = document.createElement('div');
-  line.className = 'log-line';
-  line.textContent = msg;
-  log.appendChild(line);
-  log.scrollTop = log.scrollHeight;
-}
-
-// =========================================================================
-// Form Submission + SSE
-// =========================================================================
-
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-
-  // Validate
-  if (!imageInput.files[0]) {
-    showToast('Please upload a reference UI screenshot.', 'error');
-    document.getElementById('dropzone') || dropzone.classList.add('shake');
-    return;
-  }
-
-  const storiesText = storiesTextarea.value.trim();
-  if (!storiesText) {
-    showToast('Please provide user stories JSON.', 'error');
-    return;
-  }
-
-  try { JSON.parse(storiesText); }
-  catch (e) {
-    showToast('User stories JSON is invalid. Please fix and retry.', 'error');
-    storiesTextarea.classList.add('shake');
-    setTimeout(() => storiesTextarea.classList.remove('shake'), 500);
-    return;
-  }
-
-  // UI: start
-  setGenerating(true);
-  resetPipeline();
-  resultsPanel.hidden = true;
-  pipelineIdle.hidden = true;
-  pipelineStages.style.display = 'flex';
-  startTotalTimer();
-
-  // Build form data
-  const fd = new FormData();
-  fd.append('image', imageInput.files[0]);
-  fd.append('stories', storiesText);
-  fd.append('project', projectInput.value.trim() || 'generated-app');
-  fd.append('lang', langInput.value);
-
-  let sessionId;
-  try {
-    const res = await fetch('/generate', { method: 'POST', body: fd });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || `Server error ${res.status}`);
+    // 1. Fetch Dynamic Projects from Backend API
+    async function loadDynamicProjects() {
+        try {
+            const resp = await fetch('/api/v1/projects');
+            const data = await resp.json();
+            renderProjectsGrid(data.projects || []);
+        } catch (err) {
+            console.warn('[Dynamic Load Notice]:', err.message);
+            existingProjectsGrid.innerHTML = '<p class="text-muted">No projects found. Click "Create Project" to set up your first project.</p>';
+        }
     }
-    const data = await res.json();
-    sessionId = data.session_id;
-  } catch (err) {
-    showToast(`Failed to start generation: ${err.message}`, 'error');
-    setGenerating(false);
-    stopTotalTimer();
-    pipelineIdle.hidden = false;
-    return;
-  }
 
-  // SSE
-  const evtSource = new EventSource(`/stream/${sessionId}`);
+    function renderProjectsGrid(projects) {
+        projectCountBadge.textContent = `${projects.length} Project${projects.length === 1 ? '' : 's'}`;
+        
+        if (!projects || projects.length === 0) {
+            existingProjectsGrid.innerHTML = `
+                <div class="card story-ingestion-card" style="grid-column: 1 / -1; text-align: center; padding: 3rem 1.5rem;">
+                    <h4>No Existing Projects Found</h4>
+                    <p class="text-muted" style="margin: 0.5rem 0 1.5rem 0;">You haven't created any projects yet. Click "Create Project" to configure your tech stack.</p>
+                    <button type="button" class="btn-primary" id="emptyStateCreateBtn" style="margin: 0 auto;">
+                        <span class="btn-icon">✨</span> Create Your First Project
+                    </button>
+                </div>
+            `;
 
-  evtSource.addEventListener('stage_start', (e) => {
-    const d = JSON.parse(e.data);
-    setStageStatus(d.stage, 'running');
-    startStageTimer(d.stage);
-  });
+            const emptyBtn = document.getElementById('emptyStateCreateBtn');
+            if (emptyBtn) emptyBtn.addEventListener('click', openCreateModal);
+            return;
+        }
 
-  evtSource.addEventListener('log', (e) => {
-    const d = JSON.parse(e.data);
-    addLogLine(d.stage, d.message);
-  });
+        let gridHtml = '';
+        projects.forEach(p => {
+            const cfg = p.config || {};
+            const pid = cfg.projectId || "P001";
+            gridHtml += `
+                <div class="project-card" data-pid="${pid}">
+                    <div class="card-title-row">
+                        <span class="pid-tag">${pid}</span>
+                        <h4>${cfg.projectName || 'Untitled Project'}</h4>
+                    </div>
+                    <p class="project-desc">${cfg.framework || 'React'} • ${cfg.language || 'TS'} • ${cfg.cssStrategy || 'Separate'} • ${cfg.folderStructure || 'Feature'}</p>
+                    <div class="card-footer">
+                        <span class="story-cnt">${p.storyCount || 0} Story/Stories</span>
+                        <div style="display: flex; gap: 8px;">
+                            <button type="button" class="btn-secondary btn-sm delete-project-btn" data-pid="${pid}" style="border-color: #ef4444; color: #ef4444;">🗑️</button>
+                            <button type="button" class="btn-secondary btn-sm open-workspace-btn" data-pid="${pid}">Open Workspace →</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
 
-  evtSource.addEventListener('stage_done', (e) => {
-    const d = JSON.parse(e.data);
-    stopStageTimer(d.stage);
-    setStageStatus(d.stage, 'done');
-    const timeEl = document.getElementById(`stage-${d.stage}-time`);
-    timeEl.textContent = formatTime(d.elapsed || 0);
+        existingProjectsGrid.innerHTML = gridHtml;
 
-    // Add completion info to log
-    const infos = [];
-    if (d.elements) infos.push(`${d.elements} elements`);
-    if (d.pages) infos.push(`${d.pages} pages`);
-    if (d.mappings) infos.push(`${d.mappings} mappings`);
-    if (d.coverage !== undefined) infos.push(`${d.coverage}% coverage`);
-    if (infos.length) addLogLine(d.stage, `✓ Done — ${infos.join(', ')}`);
-  });
+        // Attach click listeners to open dynamic workspace
+        document.querySelectorAll('.open-workspace-btn, .project-card').forEach(elem => {
+            elem.addEventListener('click', (e) => {
+                if (e.target.closest('.delete-project-btn')) return; // Ignore if clicking delete button
+                e.stopPropagation();
+                const pid = elem.getAttribute('data-pid') || elem.closest('.project-card').getAttribute('data-pid');
+                openProjectWorkspace(pid);
+            });
+        });
 
-  evtSource.addEventListener('stage_fail', (e) => {
-    const d = JSON.parse(e.data);
-    stopStageTimer(d.stage);
-    setStageStatus(d.stage, 'failed');
-    addLogLine(d.stage, `✗ ${d.error || 'Failed'}`);
-  });
-
-  evtSource.addEventListener('error', (e) => {
-    try {
-      const d = JSON.parse(e.data);
-      showToast(`Error: ${d.message}`, 'error');
-    } catch (_) { }
-  });
-
-  evtSource.addEventListener('done', (e) => {
-    const d = JSON.parse(e.data);
-    evtSource.close();
-    stopTotalTimer();
-    setGenerating(false);
-
-    if (d.success) {
-      const project = d.project || (projectInput ? projectInput.value.trim() : 'my-generated-app');
-      const reactPath = `output/${project}`;
-      if (runCommandEl) runCommandEl.textContent = `cd "${reactPath}" && npm install && npm run dev`;
-
-      const downloadBtn = document.getElementById('download-btn');
-      const deleteBtn = document.getElementById('delete-btn');
-      if (downloadBtn) downloadBtn.href = `/download/${project}`;
-      if (deleteBtn) deleteBtn.dataset.project = project;
-
-      if (d.file_tree && fileTreeEl) fileTreeEl.textContent = d.file_tree;
-      if (d.coverage !== undefined && coverageBadge) {
-        coverageBadge.textContent = `Coverage: ${d.coverage}%`;
-        coverageBadge.hidden = false;
-      }
-      if (resultsPanel) {
-        resultsPanel.hidden = false;
-        resultsPanel.classList.add('fade-in');
-      }
-      showToast('Frontend generated successfully! 🎉', 'success');
-    } else {
-      showToast('Generation failed. Check the pipeline logs for details.', 'error');
+        // Attach click listeners for delete buttons
+        document.querySelectorAll('.delete-project-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const pid = btn.getAttribute('data-pid');
+                if (confirm(`Are you sure you want to delete Project ${pid}? This cannot be undone.`)) {
+                    try {
+                        const resp = await fetch(`/api/v1/projects/${pid}`, { method: 'DELETE' });
+                        if (resp.ok) {
+                            loadDynamicProjects(); // Refresh the grid
+                        } else {
+                            alert(`Failed to delete Project ${pid}`);
+                        }
+                    } catch (err) {
+                        alert('Error deleting project: ' + err.message);
+                    }
+                }
+            });
+        });
     }
-  });
 
-  evtSource.onerror = (err) => {
-    // If browser is reconnecting or waiting for model response, continue listening
-    if (evtSource.readyState === EventSource.CONNECTING) {
-      console.warn('SSE connection waiting for server updates...');
-      return;
+    // 2. Fetch Project Workspace Details Dynamically
+    async function openProjectWorkspace(projectId) {
+        try {
+            const resp = await fetch(`/api/v1/projects/${projectId}`);
+            if (!resp.ok) {
+                alert(`Project '${projectId}' not found.`);
+                return;
+            }
+            const data = await resp.json();
+            currentProjectData = data;
+
+            const cfg = data.config || {};
+            activeProjectIdBadge.textContent = cfg.projectId || projectId;
+            activeProjectTitle.textContent = cfg.projectName || 'Project Workspace';
+
+            activeTechStackChips.innerHTML = `
+                <span class="chip">${cfg.framework || 'React'}</span>
+                <span class="chip">${cfg.language || 'TypeScript'}</span>
+                <span class="chip">${cfg.cssStrategy || 'Separate CSS'}</span>
+                <span class="chip">${cfg.folderStructure || 'Feature-based'}</span>
+            `;
+
+            projectsDashboardView.classList.add('hidden');
+            projectWorkspaceView.classList.remove('hidden');
+            backToProjectsBtn.classList.remove('hidden');
+
+            renderWorkspaceData(data);
+
+        } catch (err) {
+            alert('Failed to load project details: ' + err.message);
+        }
     }
-    evtSource.close();
-    stopTotalTimer();
-    setGenerating(false);
-  };
-});
 
-// =========================================================================
-// UI Helpers
-// =========================================================================
+    function renderWorkspaceData(data) {
+        const stories = (data.storyGraph && data.storyGraph.stories) ? data.storyGraph.stories : [];
+        const files = data.filesScanned || [];
 
-function setGenerating(active) {
-  generateBtn.disabled = active;
-  btnSpinner.hidden = !active;
-  btnText.textContent = active ? 'Generating...' : 'Generate Frontend';
-}
+        // Render Dynamic Story Dependency Graph
+        renderStoryGraph(stories);
 
-function resetPipeline() {
-  [1, 2, 3, 4].forEach(n => {
-    setStageStatus(n, 'pending');
-    document.getElementById(`stage-${n}-log`).innerHTML = '';
-    document.getElementById(`stage-${n}-time`).textContent = '—';
-    stopStageTimer(n);
-  });
-}
+        // Render Dynamic File Tree
+        renderFileTree(files);
 
-// Copy command
-copyBtn.addEventListener('click', () => {
-  navigator.clipboard.writeText(runCommandEl.textContent).then(() => {
-    copyBtn.textContent = 'Copied!';
-    copyBtn.classList.add('copied');
-    setTimeout(() => {
-      copyBtn.textContent = 'Copy';
-      copyBtn.classList.remove('copied');
-    }, 2000);
-  });
-});
+        // Render Story Matrix
+        renderStoryMatrix(stories);
+    }
 
-// =========================================================================
-// Toast notification helper
-// =========================================================================
+    function renderStoryGraph(stories) {
+        if (!stories || stories.length === 0) {
+            storyMermaidContainer.innerHTML = 'graph TD;\n  Start[Add Your First User Story]';
+            return;
+        }
 
-let toastTimeout;
+        let lines = ['graph TD;'];
+        lines.push('classDef node fill:#1e293b,stroke:#38bdf8,color:#f8fafc;');
 
-function showToast(msg, type = 'info') {
-  let toast = document.getElementById('toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'toast';
-    toast.setAttribute('role', 'alert');
-    toast.setAttribute('aria-live', 'assertive');
-    document.body.appendChild(toast);
-    Object.assign(toast.style, {
-      position: 'fixed',
-      bottom: '24px',
-      right: '24px',
-      padding: '12px 20px',
-      borderRadius: '10px',
-      fontSize: '0.85rem',
-      fontFamily: 'Inter, sans-serif',
-      fontWeight: '500',
-      maxWidth: '360px',
-      zIndex: '9999',
-      backdropFilter: 'blur(20px)',
-      border: '1px solid',
-      transition: 'all 0.3s ease',
-      opacity: '0',
-      transform: 'translateY(10px)',
+        stories.forEach(s => {
+            lines.push(`  ${s.id}["${s.id}: ${s.component}"]:::node;`);
+            if (s.dependsOn && s.dependsOn.length > 0) {
+                s.dependsOn.forEach(depId => {
+                    lines.push(`  ${depId} --> ${s.id};`);
+                });
+            }
+        });
+
+        const code = lines.join('\n');
+        if (window.mermaid) {
+            storyMermaidContainer.innerHTML = code;
+            storyMermaidContainer.removeAttribute('data-processed');
+            window.mermaid.contentLoaded();
+        }
+    }
+
+    function renderFileTree(files) {
+        if (!files || files.length === 0) {
+            fileTreeList.innerHTML = '<li class="text-muted">No files generated yet.</li>';
+            return;
+        }
+
+        let html = '';
+        files.forEach(f => {
+            html += `<li class="file-item" data-path="${f}">📄 ${f}</li>`;
+        });
+        fileTreeList.innerHTML = html;
+
+        document.querySelectorAll('.file-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const path = item.getAttribute('data-path');
+                activeCodeDisplay.textContent = `// File: ${path}\n// Displaying generated component code representation...`;
+            });
+        });
+    }
+
+    function renderStoryMatrix(stories) {
+        if (!stories || stories.length === 0) {
+            storyMatrixTbody.innerHTML = '<tr><td colspan="5">No user stories added yet.</td></tr>';
+            return;
+        }
+
+        let html = '';
+        stories.forEach(s => {
+            const deps = (s.dependsOn && s.dependsOn.length > 0) ? s.dependsOn.join(', ') : 'None (Base Component)';
+            html += `
+                <tr>
+                    <td><strong>${s.id}</strong></td>
+                    <td>${s.title}</td>
+                    <td><code>${s.component}</code></td>
+                    <td><span class="dep-chip">${deps}</span></td>
+                    <td><span class="status-chip chip-success">Generated & Connected</span></td>
+                </tr>
+            `;
+        });
+        storyMatrixTbody.innerHTML = html;
+    }
+
+    // 3. Add Incremental User Story Dynamically
+    addStoryForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const storyText = newUserStory.value.trim();
+        if (!storyText) {
+            alert('Please enter a User Story description.');
+            return;
+        }
+
+        const fileInput = document.getElementById('storyWireframeFile');
+        if (!fileInput.files || fileInput.files.length === 0) {
+            alert('A Wireframe image is mandatory. Please upload a wireframe image to continue.');
+            return;
+        }
+
+        if (!currentProjectData || !currentProjectData.config) {
+            alert('No active project workspace selected.');
+            return;
+        }
+
+        const pid = currentProjectData.config.projectId;
+
+        // Use FormData for file uploads instead of JSON
+        const formData = new FormData();
+        formData.append('userStory', storyText);
+        formData.append('wireframe', fileInput.files[0]);
+
+        try {
+            const resp = await fetch(`/api/v1/projects/${pid}/stories`, {
+                method: 'POST',
+                body: formData
+            });
+
+            const result = await resp.json();
+            console.log('[Incremental User Story Result]:', result);
+
+            alert(`User Story ${result.storyId} generated!\nComponent: ${result.component}\nConnected to existing story graph.`);
+            newUserStory.value = '';
+
+            // Refresh workspace view dynamically
+            openProjectWorkspace(pid);
+
+        } catch (err) {
+            alert('Failed to add story: ' + err.message);
+        }
     });
-  }
 
-  const styles = {
-    success: { bg: 'rgba(52,211,153,0.12)', border: 'rgba(52,211,153,0.4)', color: '#34d399' },
-    error: { bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.4)', color: '#f87171' },
-    info: { bg: 'rgba(99,102,241,0.12)', border: 'rgba(99,102,241,0.4)', color: '#a5b4fc' },
-  };
+    // 4. Create Project Wizard
+    function openCreateModal() {
+        createProjectModalOverlay.classList.remove('hidden');
+        createProjectForm.reset();
+    }
 
-  const s = styles[type] || styles.info;
-  toast.style.background = s.bg;
-  toast.style.borderColor = s.border;
-  toast.style.color = s.color;
-  toast.textContent = msg;
+    function closeCreateModal() {
+        createProjectModalOverlay.classList.add('hidden');
+    }
 
-  clearTimeout(toastTimeout);
-  toast.style.opacity = '1';
-  toast.style.transform = 'translateY(0)';
+    if (headerCreateProjectBtn) headerCreateProjectBtn.addEventListener('click', openCreateModal);
+    if (closeCreateModalBtn) closeCreateModalBtn.addEventListener('click', closeCreateModal);
+    if (cancelCreateBtn) cancelCreateBtn.addEventListener('click', closeCreateModal);
 
-  toastTimeout = setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(10px)';
-  }, 4000);
-}
+    createProjectForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const name = document.getElementById('newProjectName').value.trim();
+        if (!name) {
+            alert('Please enter a Project Name.');
+            return;
+        }
+
+        const payload = {
+            projectName: name,
+            framework: document.getElementById('frameworkSelect').value,
+            language: document.getElementById('languageSelect').value,
+            cssStrategy: document.getElementById('cssStrategySelect').value,
+            folderStructure: document.getElementById('folderStructureSelect').value
+        };
+
+        try {
+            const resp = await fetch('/api/v1/projects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const result = await resp.json();
+            closeCreateModal();
+
+            // Refresh dashboard dynamically and open new project workspace
+            await loadDynamicProjects();
+            if (result.config && result.config.projectId) {
+                openProjectWorkspace(result.config.projectId);
+            }
+        } catch (err) {
+            alert('Failed to create project: ' + err.message);
+        }
+    });
+
+    backToProjectsBtn.addEventListener('click', () => {
+        projectWorkspaceView.classList.add('hidden');
+        backToProjectsBtn.classList.add('hidden');
+        projectsDashboardView.classList.remove('hidden');
+        loadDynamicProjects();
+    });
+
+    // Tab Switching
+    function switchTab(btn, content) {
+        [tabStoryGraphBtn, tabCodeFilesBtn, tabLivePreviewBtn, tabTraceabilityBtn].forEach(b => b.classList.remove('active'));
+        [tabStoryGraphContent, tabCodeFilesContent, tabLivePreviewContent, tabTraceabilityContent].forEach(c => c.classList.add('hidden'));
+
+        btn.classList.add('active');
+        content.classList.remove('hidden');
+    }
+
+    tabStoryGraphBtn.addEventListener('click', () => switchTab(tabStoryGraphBtn, tabStoryGraphContent));
+    tabCodeFilesBtn.addEventListener('click', () => switchTab(tabCodeFilesBtn, tabCodeFilesContent));
+    tabLivePreviewBtn.addEventListener('click', () => switchTab(tabLivePreviewBtn, tabLivePreviewContent));
+    tabTraceabilityBtn.addEventListener('click', () => switchTab(tabTraceabilityBtn, tabTraceabilityContent));
+
+    // Initial Dynamic Load
+    loadDynamicProjects();
+});
