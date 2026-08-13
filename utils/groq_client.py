@@ -29,6 +29,78 @@ import urllib.error
 console = Console()
 
 
+class TokenManager:
+    @staticmethod
+    def estimate_tokens(item) -> int:
+        if isinstance(item, str):
+            return max(1, len(item) // 4)
+        if isinstance(item, dict):
+            # If it's a message dict
+            content = item.get("content", "")
+            if isinstance(content, str):
+                return TokenManager.estimate_tokens(content)
+            if isinstance(content, list):
+                # For vision/multi-modal content, only count text, ignore base64 images
+                total = 0
+                for block in content:
+                    if block.get("type") == "text":
+                        total += TokenManager.estimate_tokens(block.get("text", ""))
+                # Add ~100 tokens as a baseline for the image itself
+                return total + 100
+        return 0
+
+    @staticmethod
+    def compress_prompt(messages: list, max_input: int) -> list:
+        total = sum(TokenManager.estimate_tokens(m) for m in messages)
+        if total <= max_input:
+            return messages
+            
+        import re
+        
+        # 1. Smart compression heuristic
+        compressed = []
+        for m in messages:
+            content = m.get("content", "")
+            if isinstance(content, str):
+                # Remove duplicate logs/warnings if any
+                content = re.sub(r"(\[WARN\].*\n)\1+", r"\1", content)
+                # Remove extra blank lines to save token overhead
+                content = re.sub(r"\n{3,}", "\n\n", content)
+                
+                # If still too large, compress CSS and React blocks intelligently
+                if TokenManager.estimate_tokens(content) > max_input:
+                    # Truncate CSS blocks heavily (we rarely need the full CSS to fix React)
+                    content = re.sub(r"```css\n(.*?)\n```", lambda match: f"```css\n{match.group(1)[:500]}\n...[CSS COMPRESSED]...\n```" if len(match.group(1)) > 500 else match.group(0), content, flags=re.DOTALL)
+                    
+                if TokenManager.estimate_tokens(content) > max_input:
+                    # Truncate large code blocks while preserving start and end
+                    def truncate_code(match):
+                        code = match.group(1)
+                        if len(code) > 1500:
+                            return f"```{match.group(2) or ''}\n{code[:750]}\n...[CODE COMPRESSED]...\n{code[-750:]}\n```"
+                        return match.group(0)
+                    content = re.sub(r"```([a-zA-Z0-9_-]*)\n(.*?)\n```", truncate_code, content, flags=re.DOTALL)
+                    
+                # Last resort: generic truncation if STILL too large
+                if TokenManager.estimate_tokens(content) > max_input:
+                    half = max(500, (max_input // len(messages)) * 2)
+                    if len(content) > half * 2:
+                        content = content[:half] + "\n\n...[COMPRESSED]...\n\n" + content[-half:]
+                        
+            elif isinstance(content, list):
+                # For vision/multi-modal content, truncate text blocks
+                for i, item in enumerate(content):
+                    if item.get("type") == "text" and len(item.get("text", "")) > 1000:
+                        text_val = item["text"]
+                        text_val = re.sub(r"\n{3,}", "\n\n", text_val)
+                        half = max(500, (max_input // len(content)) * 2)
+                        if len(text_val) > half * 2:
+                            content[i]["text"] = text_val[:half] + "\n\n...[COMPRESSED]...\n\n" + text_val[-half:]
+            
+            compressed.append({**m, "content": content})
+        return compressed
+
+
 class GroqClient:
     """Initialises the LLM SDK (Groq or OpenRouter) and provides chat/vision helpers."""
 
@@ -48,8 +120,6 @@ class GroqClient:
             self._init_client()
 
     def _init_client(self) -> None:
-        if settings.provider == "openrouter":
-            return
         current_key = self._api_keys[self._current_key_idx]
         try:
             self._client = Groq(api_key=current_key)
@@ -189,28 +259,80 @@ class GroqClient:
         temperature: float,
         max_tokens: int,
     ) -> str:
+        # 1. Determine total budget
+        is_code = "gpt-oss" in model.lower() or "coder" in model.lower()
+        has_image = any(isinstance(msg.get("content"), list) for msg in messages)
+        total_budget = settings.max_total_tokens if is_code else 8000
+        # 2. Estimate original input tokens
+        original_input_tokens = sum(TokenManager.estimate_tokens(m) for m in messages)
+        
+        # 3. Dynamic Sliding Window Token Allocator
+        # We give the input what it needs up to a reasonable cap (max_input_tokens).
+        allowed_input = min(original_input_tokens, settings.max_input_tokens)
+        
+        # The output gets whatever is left from the budget
+        allowed_output = total_budget - allowed_input - settings.token_safety_margin
+        
+        # Ensure the output has an absolute minimum floor (e.g. 1500 tokens) so code doesn't get instantly truncated
+        if allowed_output < 1500:
+            allowed_output = 1500
+            allowed_input = total_budget - allowed_output - settings.token_safety_margin
+            
+        max_tokens = min(max_tokens, allowed_output)
+        
+        # 4. Compress if needed
+        if original_input_tokens > allowed_input:
+            messages = TokenManager.compress_prompt(messages, allowed_input)
+            
+        # 5. Log metrics
+        compressed_input_tokens = sum(TokenManager.estimate_tokens(m) for m in messages)
+        console.print(f"[cyan]AI Pipeline: Token Budget | Original: {original_input_tokens} → Compressed: {compressed_input_tokens} → Output: {max_tokens} → Total: {compressed_input_tokens + max_tokens} (Limit: {total_budget})[/cyan]")
+
         if settings.provider == "openrouter":
             try:
                 return self._call_openrouter(model, messages, temperature, max_tokens)
             except Exception as e:
-                # If OpenRouter fails, automatically failover to Groq with Qwen
                 if settings.groq_api_keys:
-                    console.print(f"[bold yellow][GroqClient] OpenRouter API failed ({e}). Falling back to Groq and Qwen...[/bold yellow]")
+                    console.print(f"[bold yellow][GroqClient] OpenRouter API failed ({e}). Falling back to Groq...[/bold yellow]")
                     has_image = any(isinstance(msg.get("content"), list) for msg in messages)
-                    # Use llama vision for images (since Groq doesn't host Qwen vision), and qwen-2.5-coder-32b for code
-                    fallback_model = "llama-3.2-11b-vision-preview" if has_image else "qwen-2.5-coder-32b"
+                    fallback_model = settings.fallback_vision_model if has_image else settings.fallback_code_model
                     
                     if not hasattr(self, "_client"):
                         self._api_keys = settings.groq_api_keys
                         self._current_key_idx = 0
                         self._init_client()
                         
-                    return self._call_groq(fallback_model, messages, temperature, max_tokens)
+                    return self._call_groq_with_retry(fallback_model, messages, temperature, max_tokens)
                 raise
         elif settings.provider == "openai":
             return self._call_openai(model, messages, temperature, max_tokens)
         else:
+            try:
+                return self._call_groq_with_retry(model, messages, temperature, max_tokens)
+            except Exception as e:
+                if settings.openrouter_api_key:
+                    console.print(f"[bold yellow][GroqClient] Groq API failed ({e}). Falling back to OpenRouter...[/bold yellow]")
+                    has_image = any(isinstance(msg.get("content"), list) for msg in messages)
+                    fallback_model = settings.fallback_vision_model if has_image else settings.fallback_code_model
+                    return self._call_openrouter(fallback_model, messages, temperature, max_tokens)
+                raise
+
+    def _call_groq_with_retry(
+        self,
+        model: str,
+        messages: list,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        try:
             return self._call_groq(model, messages, temperature, max_tokens)
+        except Exception as exc:
+            # Handle 413 Rate Limit Exceeded for Groq
+            if "413" in str(exc) or "rate_limit_exceeded" in str(exc) or "too large" in str(exc).lower():
+                console.print(f"[bold yellow][GroqClient] 413 Rate Limit Exceeded. Retrying with compressed prompt...[/bold yellow]")
+                compressed_messages = TokenManager.compress_prompt(messages, settings.max_input_tokens // 2)
+                return self._call_groq(model, compressed_messages, temperature, max_tokens // 2)
+            raise
 
     def _call_openai(
         self,

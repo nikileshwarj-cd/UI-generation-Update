@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Optional
 from rich.console import Console
 
 from config import settings
-from utils.groq_client import GroqClient
+from utils.groq_client import GroqClient, TokenManager
 from utils.file_manager import FileManager
 
 console = Console()
@@ -42,6 +42,7 @@ class UIRegenerator:
         file_manager: FileManager,
         validation_report: Dict[str, Any],
         project_name: str,
+        is_complex: bool = False,
         progress_cb: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """
@@ -50,7 +51,8 @@ class UIRegenerator:
         def emit(msg: str) -> None:
             if progress_cb:
                 progress_cb(msg)
-            console.print(f"  [cyan]{msg}[/cyan]")
+            else:
+                console.print(f"  [cyan]{msg}[/cyan]")
 
         score = validation_report.get("similarity_score", 100)
         if score >= 98:
@@ -63,43 +65,90 @@ class UIRegenerator:
         ext = "ts" if is_angular else settings.output_language
         src = file_manager.react_src_dir
 
-        # Find the first non-App, non-main component file to refine
-        component_file = None
-        for f in src.glob(f"*.{ext}"):
-            if f.stem not in ("App", "main"):
-                component_file = f
-                break
-        if component_file is None:
-            component_file = src / f"App.{ext}"
+        target_files = []
 
-        css_name = component_file.stem + ".css"
-        css_file = src / css_name
+        if is_complex:
+            fundamental = validation_report.get("fundamental_layout_failure", False)
+            failed_comps = validation_report.get("failed_components", [])
+            
+            if fundamental:
+                emit("  [WARN] Fundamental layout failure detected. Regenerating main layout...")
+                target_files.append(src / f"App.{ext}")
+            elif failed_comps:
+                for comp in failed_comps:
+                    cname = comp.get("component_name")
+                    if cname:
+                        for f in src.rglob(f"*.{ext}"):
+                            if f.is_file() and cname.lower() in f.stem.lower():
+                                target_files.append((f, comp.get("issues", [])))
+                                break
+        else:
+            issues = validation_report.get("elements", [])
+            missing = [e for e in issues if e.get("status") in ("Missing", "Extra", "Misaligned", "Wrong Size", "Wrong Style")]
+            for e in missing:
+                eid = e.get("element_id")
+                if eid:
+                    for f in src.rglob(f"*.{ext}"):
+                        if f.is_file() and eid in f.read_text(encoding="utf-8") and f not in [t[0] if isinstance(t, tuple) else t for t in target_files]:
+                            target_files.append(f)
+                            
+        if not target_files:
+            # Fallback to naive search
+            for f in src.rglob(f"*.{ext}"):
+                if f.is_file() and f.stem not in ("App", "main"):
+                    target_files.append(f)
+                    break
+        
+        if not target_files:
+            target_files.append(src / f"App.{ext}")
+            
+        success = False
+        
+        # We loop through target files. If it's a tuple, it's (file, issues_list)
+        for target in target_files:
+            if isinstance(target, tuple):
+                component_file = target[0]
+                issue_summary = ", ".join(target[1])
+            else:
+                component_file = target
+                missing_names = [e.get("element_name", "") for e in validation_report.get("elements", []) if e.get("status") != "Correct"]
+                issue_summary = ", ".join(missing_names[:10]) if missing_names else "general visual mismatch"
 
-        current_react = component_file.read_text(encoding="utf-8") if component_file.exists() else ""
-        current_css = css_file.read_text(encoding="utf-8") if css_file.exists() else ""
+            css_name = component_file.stem + ".css"
+            css_file = component_file.parent / css_name
+            if not css_file.exists():
+                css_file = src / css_name # Fallback to root css
 
-        # Build a LEAN prompt — send only the issues, not the full validation report
-        issues = validation_report.get("elements", [])
-        missing = [e.get("element_name", "") for e in issues if e.get("status") in ("Missing", "Extra", "Misaligned", "Wrong Size", "Wrong Style")]
-        issue_summary = ", ".join(missing[:10]) if missing else "general visual mismatch"
+            current_react = component_file.read_text(encoding="utf-8") if component_file.exists() else ""
+            current_css = css_file.read_text(encoding="utf-8") if css_file.exists() else ""
 
-        user_prompt = (
-            f"Fix the following visual issues in this React {ext.upper()} component: {issue_summary}.\n\n"
-            f"Current component ({component_file.name}):\n"
-            f"```{ext}\n{current_react[:3000]}\n```\n\n"
-            f"Current CSS ({css_name}):\n"
-            f"```css\n{current_css[:1500]}\n```\n\n"
-            f"Return Block 1 as the fixed {ext.upper()} component and Block 2 as the fixed CSS, "
-            "each inside ```code fences```."
-        )
+            user_prompt = (
+                f"Fix the following visual issues in this React {ext.upper()} component: {issue_summary}.\n\n"
+                f"Current component ({component_file.name}):\n"
+                f"```{ext}\n{current_react[:5000]}\n```\n\n"
+                f"Current CSS ({css_name}):\n"
+                f"```css\n{current_css[:2000]}\n```\n\n"
+                f"Return Block 1 as the fixed {ext.upper()} component and Block 2 as the fixed CSS, "
+                "each inside ```code fences```."
+            )
 
-        # Use fast small model list — avoid gpt-oss which doesn't return code blocks reliably
+        est_in = TokenManager.estimate_tokens(user_prompt + self._system_prompt)
+        max_out = settings.max_output_tokens
+        emit(f"  Original tokens: {est_in}")
+        
+        # Estimate after compression for logging
+        compressed = TokenManager.compress_prompt([{"role": "user", "content": user_prompt}], settings.max_input_tokens)
+        comp_in = TokenManager.estimate_tokens(compressed[0]["content"]) + TokenManager.estimate_tokens(self._system_prompt)
+        if comp_in < est_in:
+            emit(f"  Compressed tokens: {comp_in}")
+        emit(f"  Max output: {max_out}")
+        emit(f"  Estimated total: {comp_in + max_out}")
+
+        # Use the configured code model first, with fast small models as fallbacks
         regen_models = [
-            m for m in [
-                "llama-3.1-8b-instant",   # 20K TPM — best for refinement
-                "llama-3.3-70b-versatile", # 12K TPM fallback
-                settings.code_model,
-            ] if "gpt-oss" not in m
+            "openai/gpt-oss-120b",
+            "llama-3.1-8b-instant",
+            "llama-3.3-70b-versatile"
         ]
         regen_models = list(dict.fromkeys(regen_models))  # deduplicate
 
@@ -149,6 +198,8 @@ class UIRegenerator:
 
         if not refined_jsx and not refined_css:
             emit("[WARN] UI Regeneration response contained no extractable code.")
+            from rich.console import Console
+            Console().print(f"[red]RAW OUTPUT DUMP:[/red]\n{raw_output}\n")
             return False
 
         # Auto-repair unclosed quotes on JSX lines
@@ -163,8 +214,10 @@ class UIRegenerator:
             refined_jsx = "\n".join(fixed)
             file_manager.write_text(component_file, refined_jsx)
 
-        if refined_css:
-            file_manager.write_text(css_file, refined_css)
+            if refined_css:
+                file_manager.write_text(css_file, refined_css)
 
-        emit(f"✓ React UI Regeneration complete — updated {component_file.name} & {css_name}.")
-        return True
+            emit(f"✓ React UI Regeneration complete — updated {component_file.name} & {css_name}.")
+            success = True
+            
+        return success

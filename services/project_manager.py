@@ -55,7 +55,13 @@ def create_project(payload: ProjectCreatePayload) -> Dict[str, Any]:
     db = SessionLocal()
     try:
         count = db.query(ProjectDB).count()
-        project_id = f"P{count + 1:03d}"
+        existing_ids = {p.id for p in db.query(ProjectDB).all()}
+        next_num = count + 1
+        project_id = f"P{next_num:03d}"
+        while project_id in existing_ids:
+            next_num += 1
+            project_id = f"P{next_num:03d}"
+            
         clean_name = payload.projectName.strip() or f"Project_{project_id}"
 
         proj = ProjectDB(
@@ -156,6 +162,8 @@ def add_user_story_to_project(project_id: str, payload: AddStoryPayload, wirefra
     from agent.code_generator import CodeGenerator
     from agent.ui_validator import UIValidator
     from agent.ui_regenerator import UIRegenerator
+    from agent.layout_analyzer import LayoutAnalyzer
+    from utils.ui_helpers import is_complex_ui
     
     init_db()
     db = SessionLocal()
@@ -179,6 +187,22 @@ def add_user_story_to_project(project_id: str, payload: AddStoryPayload, wirefra
         )
         if not ui_spec:
             raise ValueError("Failed to analyze image and generate UI Spec")
+
+        # Stage 1.5: Layout Analysis (for complex UIs only)
+        layout_spec_path = None
+        is_complex = False
+        if ui_spec and ui_spec.pages:
+            # Check complexity of the first page
+            is_complex = is_complex_ui(ui_spec.pages[0].model_dump(by_alias=True) if hasattr(ui_spec.pages[0], "model_dump") else ui_spec.pages[0])
+            
+        if is_complex:
+            la = LayoutAnalyzer(groq_client)
+            layout_spec_path = fm.metadata_dir / "layout_spec.json"
+            la.analyze(
+                image_path=Path(wireframe_path),
+                output_path=layout_spec_path,
+                progress_cb=lambda msg: print(f"AI Pipeline: {msg}")
+            )
 
         # Stage 2: Map User Story
         # Create a mock user_stories.json
@@ -220,6 +244,7 @@ def add_user_story_to_project(project_id: str, payload: AddStoryPayload, wirefra
             file_manager=fm,
             project_name=p.name,
             css_strategy=p.css_strategy,
+            layout_spec_path=layout_spec_path,
             progress_cb=lambda msg: print(f"AI Pipeline: {msg}")
         )
         # Stage 4: Validate
@@ -229,6 +254,7 @@ def add_user_story_to_project(project_id: str, payload: AddStoryPayload, wirefra
             ground_truth_image=Path(wireframe_path),
             output_path=val_report_path,
             ui_spec_path=spec_path,
+            is_complex=is_complex,
             progress_cb=lambda msg: print(f"AI Pipeline: {msg}")
         )
         
@@ -238,6 +264,7 @@ def add_user_story_to_project(project_id: str, payload: AddStoryPayload, wirefra
             file_manager=fm,
             validation_report=val_report,
             project_name=p.name,
+            is_complex=is_complex,
             progress_cb=lambda msg: print(f"AI Pipeline: {msg}")
         )
         

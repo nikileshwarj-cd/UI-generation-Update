@@ -112,6 +112,12 @@ class Settings:
     code_model: str = field(
         default_factory=lambda: _get("CODE_MODEL", "openai/gpt-4o-mini")
     )
+    fallback_vision_model: str = field(
+        default_factory=lambda: _get("FALLBACK_VISION_MODEL", "llama-3.2-11b-vision-preview")
+    )
+    fallback_code_model: str = field(
+        default_factory=lambda: _get("FALLBACK_CODE_MODEL", "qwen-2.5-coder-32b")
+    )
 
     # Output
     output_language: str = field(
@@ -137,6 +143,18 @@ class Settings:
     )
     max_tokens_vision: int = field(
         default_factory=lambda: _get_int("MAX_TOKENS_VISION", 4000)
+    )
+    max_input_tokens: int = field(
+        default_factory=lambda: _get_int("MAX_INPUT_TOKENS", 5000)
+    )
+    max_output_tokens: int = field(
+        default_factory=lambda: _get_int("MAX_OUTPUT_TOKENS", 1000)
+    )
+    max_total_tokens: int = field(
+        default_factory=lambda: _get_int("MAX_TOTAL_TOKENS", 7000)
+    )
+    token_safety_margin: int = field(
+        default_factory=lambda: _get_int("TOKEN_SAFETY_MARGIN", 500)
     )
 
     # Paths

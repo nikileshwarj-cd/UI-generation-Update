@@ -169,8 +169,18 @@ class UISpec(BaseModel):
     def all_element_ids(self) -> List[str]:
         ids = []
         for page in self.pages:
-            for el in page.all_elements():
-                eid = el.element_id if hasattr(el, "element_id") else (el.get("element_id") or el.get("elementId") if isinstance(el, dict) else None)
-                if eid:
-                    ids.append(eid)
-        return ids
+            if isinstance(page, dict):
+                def extract_ids(obj):
+                    if isinstance(obj, dict):
+                        if "elementId" in obj: ids.append(obj["elementId"])
+                        elif "element_id" in obj: ids.append(obj["element_id"])
+                        for v in obj.values(): extract_ids(v)
+                    elif isinstance(obj, list):
+                        for item in obj: extract_ids(item)
+                extract_ids(page)
+            else:
+                for el in page.all_elements():
+                    eid = el.element_id if hasattr(el, "element_id") else (el.get("element_id") or el.get("elementId") if isinstance(el, dict) else None)
+                    if eid:
+                        ids.append(eid)
+        return list(dict.fromkeys(ids))

@@ -83,6 +83,10 @@ class ImageAnalyzer:
                     emit(f"Parsing response from {v_model}...")
                     spec = self._parse_response(raw_response, image_path.name)
                     if spec is not None:
+                        if len(spec.all_element_ids()) == 0:
+                            emit(f"  [WARN] Vision model '{v_model}' returned 0 elements. Trying fallback...")
+                            spec = None
+                            continue
                         break
                     else:
                         emit(f"  [WARN] Vision model '{v_model}' returned invalid JSON. Trying fallback...")

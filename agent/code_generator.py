@@ -22,6 +22,7 @@ from models import UISpec, MappingDocument, TraceabilityReport, TraceabilityEntr
 from utils.groq_client import GroqClient
 from utils.file_manager import FileManager
 from utils.json_utils import parse_json_safe, save_json, validate_model, load_json
+from utils.ui_helpers import is_complex_ui
 
 console = Console()
 
@@ -36,7 +37,8 @@ class CodeGenerator:
     def __init__(self, groq_client: GroqClient, framework: str = "React") -> None:
         self._client = groq_client
         self.framework = framework
-        self._system_prompt = self._load_prompt()
+        # Default prompt is loaded here for backward compatibility, but generate() will reload dynamically
+        self._system_prompt = self._load_prompt(is_complex=False)
 
     # ------------------------------------------------------------------
     # Public API
@@ -52,16 +54,20 @@ class CodeGenerator:
         file_manager: FileManager,
         project_name: str,
         css_strategy: str = "Separate",
+        layout_spec_path: Optional[Path] = None,
         progress_cb: Optional[Callable[[str], None]] = None,
     ) -> Optional[TraceabilityReport]:
 
         def emit(msg: str) -> None:
             if progress_cb:
                 progress_cb(msg)
-            console.print(f"  [cyan]{msg}[/cyan]")
+            else:
+                console.print(f"  [cyan]{msg}[/cyan]")
 
         spec_dict = load_json(ui_spec_path) or {}
         mapping_dict = load_json(mapping_path) or {}
+        layout_spec_dict = load_json(layout_spec_path) if layout_spec_path and layout_spec_path.exists() else None
+
         pages = spec_dict.get("pages", [])
         if not pages:
             pages = [spec_dict]
@@ -92,45 +98,59 @@ class CodeGenerator:
 
         for page_idx, raw_page in enumerate(pages, start=1):
             page_name = raw_page.get("pageName", raw_page.get("page_name", f"Page{page_idx}"))
-            emit(f"[{page_idx}/{len(pages)}] Generating: {page_name}...")
-
-            # Slim this page's spec to only what the LLM needs for JSX structure
-            slim_page = self._slim_spec(raw_page)
-
-            # Filter story mappings relevant to this page
-            page_id = raw_page.get("pageId", raw_page.get("page_id", ""))
+            page_id = raw_page.get("pageId", raw_page.get("page_id", f"PAGE_{page_idx}"))
+            
+            # Extract mappings relevant to this page (or just pass all if no pageId filtering is needed)
             page_mappings = [
                 m for m in mapping_dict.get("mappings", [])
-                if m.get("pageId") == page_id or m.get("page_id") == page_id
-            ] or mapping_dict.get("mappings", [])
+                if m.get("pageId") == page_id or not m.get("pageId")
+            ]
+            
+            is_complex = is_complex_ui(raw_page)
+            if is_complex:
+                emit(f"[{page_idx}/{len(pages)}] Generating (COMPLEX UI PATH - STAGED): {page_name}...")
+                page_data = self._generate_staged(
+                    raw_page=raw_page,
+                    page_name=page_name,
+                    page_mappings=page_mappings,
+                    design_tokens=design_tokens,
+                    css_strategy=css_strategy,
+                    layout_spec_dict=layout_spec_dict,
+                    emit=emit,
+                    code_models=code_models
+                )
+            else:
+                emit(f"[{page_idx}/{len(pages)}] Generating: {page_name}...")
+                # Dynamically reload prompt for this page based on complexity
+                system_prompt = self._load_prompt(is_complex=False).replace("{{LANGUAGE}}", EXT.upper())
+                slim_page = self._slim_spec(raw_page)
+                user_prompt = self._build_page_prompt(slim_page, page_mappings, design_tokens, css_strategy, None)
 
-            user_prompt = self._build_page_prompt(slim_page, page_mappings, design_tokens, css_strategy)
+                # Log estimated token usage
+                est_in = self._estimate_tokens(system_prompt + user_prompt)
+                est_out = settings.max_tokens_code
+                emit(f"  Token estimate: ~{est_in} input + {est_out} output = ~{est_in + est_out} total")
+                if est_in > 8000:
+                    emit(f"  [WARN] Input prompt is large ({est_in} est. tokens). Consider reducing ui_spec complexity.")
 
-            # Log estimated token usage
-            est_in = self._estimate_tokens(system_prompt + user_prompt)
-            est_out = settings.max_tokens_code
-            emit(f"  Token estimate: ~{est_in} input + {est_out} output = ~{est_in + est_out} total")
-            if est_in > 8000:
-                emit(f"  [WARN] Input prompt is large ({est_in} est. tokens). Consider reducing ui_spec complexity.")
+                raw_response = ""
+                for c_model in code_models:
+                    emit(f"  Model: {c_model}...")
+                    try:
+                        raw_response = self._client.chat(
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            model=c_model,
+                            max_tokens=settings.max_tokens_code,
+                        )
+                        if raw_response and raw_response.strip():
+                            break
+                    except Exception as exc:
+                        emit(f"  [WARN] {c_model} failed: {exc}. Trying fallback...")
+                        continue
 
-            raw_response = ""
-            for c_model in code_models:
-                emit(f"  Model: {c_model}...")
-                try:
-                    raw_response = self._client.chat(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        model=c_model,
-                        max_tokens=settings.max_tokens_code,
-                    )
-                    if raw_response and raw_response.strip():
-                        break
-                except Exception as exc:
-                    emit(f"  [WARN] {c_model} failed: {exc}. Trying fallback...")
-                    continue
-
-            # Parse this page's response
-            page_data = self._parse_page_response(raw_response, page_name)
+                # Parse this page's response
+                page_data = self._parse_page_response(raw_response, page_name)
             if page_data:
                 all_pages_data.append(page_data)
                 # Capture shared components + app root from first successful response
@@ -183,24 +203,179 @@ class CodeGenerator:
         emit(f"Stage 3 complete — {len(all_pages_data)} page(s) generated.")
         return report
 
+    def _generate_staged(
+        self,
+        raw_page: Dict[str, Any],
+        page_name: str,
+        page_mappings: List[Dict[str, Any]],
+        design_tokens: Dict[str, Any],
+        css_strategy: str,
+        layout_spec_dict: Optional[Dict[str, Any]],
+        emit: Callable[[str], None],
+        code_models: List[str]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Orchestrates sequential generation for complex pages.
+        1. Layout
+        2. Sidebar, Header, etc.
+        3. Assembly
+        """
+        if not layout_spec_dict:
+            layout_spec_dict = self._slim_spec(raw_page)
+
+        # Chunk layout spec into targets
+        # Fallback simplistic chunking for demonstration
+        targets = ["Sidebar", "Header", "KPI_Cards", "MainContent"]
+        
+        comp_prompt = settings.prompts_dir / "dynamic_code_generator" / "react_generation_staged_component.txt"
+        asm_prompt = settings.prompts_dir / "dynamic_code_generator" / "react_generation_staged_assembly.txt"
+        
+        if comp_prompt.exists():
+            sys_comp = comp_prompt.read_text(encoding="utf-8").replace("{{LANGUAGE}}", EXT.upper())
+        else:
+            sys_comp = "Generate the specified component. Return ONLY JSON."
+            
+        if asm_prompt.exists():
+            sys_asm = asm_prompt.read_text(encoding="utf-8").replace("{{LANGUAGE}}", EXT.upper())
+        else:
+            sys_asm = "Assemble the components. Return ONLY JSON."
+
+        generated_components = []
+
+        # 1. Generate sub-components
+        for target in targets:
+            emit(f"  -> Generating Stage: {target}...")
+            u_prompt = (
+                f"Target Component: {target}\n"
+                f"Design Tokens: {json.dumps(design_tokens)}\n"
+                f"Layout Spec (Focus on {target}): {json.dumps(layout_spec_dict)[:1000]}...\n" # In a real implementation, we'd filter the tree precisely.
+                "\n- ICON RESOLUTION & IMPORT ENGINE: You are responsible for resolving visual icons from the UI spec into native React icon components. "
+                "1. Standard UI Icons (e.g. search, user, bell, settings, trash) MUST be imported exclusively from `lucide-react`. "
+                "2. Brand/Tech Logos (e.g. GitHub, Google) MUST be imported from `react-icons/si`. "
+                "3. Convert all icon names to PascalCase React components (e.g. `RefreshCw`, `SiGoogle`). "
+                "4. Group all icon imports at the top in single destructured statements (e.g. `import { Search, User } from 'lucide-react';`). "
+                "5. All rendered icon components MUST accept dynamic sizing and styling classes. Do NOT fabricate local components or use lowercase tags.\n"
+            )
+            
+            # Pre-flight token check and compression
+            est_tokens = self._estimate_tokens(sys_comp + u_prompt)
+            if est_tokens + settings.max_output_tokens > settings.max_total_tokens:
+                emit(f"  [WARN] Prompt for {target} too large ({est_tokens} tokens). Compressing...")
+                sys_comp, u_prompt = self._compress_prompt(sys_comp, u_prompt, layout_spec_dict)
+                emit(f"  -> Compressed to ~{self._estimate_tokens(sys_comp + u_prompt)} tokens.")
+            
+            raw_comp = None
+            for c_model in code_models:
+                try:
+                    raw_comp = self._client.chat(sys_comp, u_prompt, model=c_model, max_tokens=settings.max_output_tokens)
+                    if raw_comp and raw_comp.strip(): break
+                except: continue
+                
+            if raw_comp:
+                parsed = self._parse_code_response(raw_comp)
+                if isinstance(parsed, dict) and "components" in parsed:
+                    for p in parsed["components"]:
+                        if "componentName" not in p:
+                            p["componentName"] = target
+                    generated_components.extend(parsed["components"])
+                elif isinstance(parsed, dict) and any(k in parsed for k in ("reactContent", "codeContent", "angularContent")):
+                    if "componentName" not in parsed:
+                        parsed["componentName"] = target
+                    generated_components.append(parsed)
+
+        # 2. Assemble
+        emit(f"  -> Generating Assembly: {page_name}...")
+        asm_user = (
+            f"Page Name: {page_name}\n"
+            f"Sub-components Available: {[c.get('componentName') for c in generated_components]}\n"
+            f"Root Layout Spec: {json.dumps(layout_spec_dict)[:1000]}...\n"
+            "\n- ICON RESOLUTION & IMPORT ENGINE: You are responsible for resolving visual icons from the UI spec into native React icon components. "
+            "1. Standard UI Icons (e.g. search, user, bell, settings, trash) MUST be imported exclusively from `lucide-react`. "
+            "2. Brand/Tech Logos (e.g. GitHub, Google) MUST be imported from `react-icons/si`. "
+            "3. Convert all icon names to PascalCase React components (e.g. `RefreshCw`, `SiGoogle`). "
+            "4. Group all icon imports at the top in single destructured statements (e.g. `import { Search, User } from 'lucide-react';`). "
+            "5. All rendered icon components MUST accept dynamic sizing and styling classes. Do NOT fabricate local components or use lowercase tags.\n"
+        )
+        
+        # Pre-flight token check and compression for assembly
+        est_tokens = self._estimate_tokens(sys_asm + asm_user)
+        if est_tokens + settings.max_output_tokens > settings.max_total_tokens:
+            emit(f"  [WARN] Prompt for Assembly too large ({est_tokens} tokens). Compressing...")
+            sys_asm, asm_user = self._compress_prompt(sys_asm, asm_user, layout_spec_dict)
+            emit(f"  -> Compressed to ~{self._estimate_tokens(sys_asm + asm_user)} tokens.")
+
+        raw_asm = None
+        for c_model in code_models:
+            try:
+                raw_asm = self._client.chat(sys_asm, asm_user, model=c_model, max_tokens=settings.max_output_tokens)
+                if raw_asm and raw_asm.strip(): break
+            except: continue
+            
+        final_page_data = {
+            "pageId": raw_page.get("pageId", "PAGE_COMPLEX"),
+            "pageName": page_name,
+            "componentName": f"{page_name.replace(' ', '')}Page",
+            "route": raw_page.get("route", "/"),
+            "components": generated_components
+        }
+        
+        if raw_asm:
+            parsed_asm = self._parse_code_response(raw_asm)
+            has_content = any(k in parsed_asm for k in ("reactContent", "codeContent", "angularContent")) if isinstance(parsed_asm, dict) else False
+            if has_content:
+                parsed_asm["componentName"] = final_page_data["componentName"]
+                final_page_data["components"].append(parsed_asm)
+            elif isinstance(parsed_asm, dict) and "components" in parsed_asm:
+                if len(parsed_asm["components"]) > 0:
+                    parsed_asm["components"][-1]["componentName"] = final_page_data["componentName"]
+                final_page_data["components"].extend(parsed_asm["components"])
+        
+        return final_page_data
+
+    # ------------------------------------------------------------------
+    # Token Management
+    # ------------------------------------------------------------------
+
+    def _compress_prompt(self, sys_prompt: str, user_prompt: str, layout_spec: Optional[Dict[str, Any]]) -> tuple[str, str]:
+        """
+        Compresses prompts aggressively to stay under MAX_TOTAL_TOKENS.
+        - Removes verbose rules and redundant layout trees.
+        - Preserves strict bounding boxes, components, and layout architecture rules.
+        """
+        # Compress System Prompt
+        sys_comp = sys_prompt
+        # Remove repetitive instructions
+        sys_comp = re.sub(r'JSON strings: escape.*?\n', '', sys_comp)
+        sys_comp = re.sub(r'Do NOT use hardcoded wrappers.*?\n', '', sys_comp)
+        sys_comp = re.sub(r'GLOBAL VS LOCAL VARIABLES:.*?\n', '', sys_comp)
+        
+        # Compress User Prompt
+        u_comp = user_prompt
+        # Truncate stringified JSON to an aggressive shallow version if needed
+        if layout_spec:
+            # Shallow extract: drop 'attributes', deep 'children' for irrelevant components
+            slimmed = self._slim_spec(layout_spec) # Assuming slim_spec strips enough, else could write a deeper trimmer
+            # If it's a string representation in the prompt, trim it
+            u_comp = re.sub(r'Layout Spec.*?\{', 'Layout Spec: {', u_comp, flags=re.DOTALL)
+            
+        return sys_comp, u_comp
+
     # ------------------------------------------------------------------
     # Prompt building
     # ------------------------------------------------------------------
 
-    def _load_prompt(self) -> str:
+    def _load_prompt(self, is_complex: bool = False) -> str:
         fw_raw = self.framework.lower()
         if "angular" in fw_raw:
-            prompt_name = "angular_generation.txt"
+            prompt_name = "angular_generation_complex.txt" if is_complex else "angular_generation.txt"
             fallback = "You are an Angular developer. Generate a complete Angular standalone project. Return ONLY valid JSON."
         else:
-            prompt_name = "react_generation.txt"
+            prompt_name = "react_generation_complex.txt" if is_complex else "react_generation.txt"
             fallback = "You are a React developer. Generate a complete React/Vite project. Return ONLY valid JSON."
             
-        prompt_path = settings.prompts_dir / prompt_name
+        prompt_path = settings.prompts_dir / "dynamic_code_generator" / prompt_name
         if prompt_path.exists():
             return prompt_path.read_text(encoding="utf-8")
-        return fallback
-
     def _slim_spec(self, page_dict: Dict[str, Any]) -> Dict[str, Any]:
         """
         Compress a page spec for the LLM prompt.
@@ -265,6 +440,7 @@ class CodeGenerator:
         page_mappings: List[Dict[str, Any]],
         design_tokens: Optional[Dict[str, Any]] = None,
         css_strategy: str = "Separate",
+        layout_spec_dict: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build a focused single-page prompt — compact but visually precise."""
         fw_raw = self.framework.lower()
@@ -284,16 +460,63 @@ class CodeGenerator:
                 "## Design Tokens (use these exact values in CSS)\n"
                 f"{json.dumps(design_tokens)}\n\n"
             )
+            
+        # Dynamically list element types for the prompt to enforce completion
+        element_types = set()
+        def extract_types(el_list):
+            for el in el_list:
+                if isinstance(el, dict):
+                    if "elementType" in el:
+                        element_types.add(el["elementType"])
+                    if "children" in el and isinstance(el["children"], list):
+                        extract_types(el["children"])
+        
+        if "sections" in slim_page and isinstance(slim_page["sections"], list):
+            for sec in slim_page["sections"]:
+                if "elements" in sec and isinstance(sec["elements"], list):
+                    extract_types(sec["elements"])
+        elif "elements" in slim_page and isinstance(slim_page["elements"], list):
+            extract_types(slim_page["elements"])
+            
+        dynamic_enforcement = ""
+        if element_types:
+            dynamic_enforcement = (
+                "CRITICAL: The wireframe contains the following element types: " + ", ".join(element_types) + ".\n"
+                "You MUST ensure EVERY SINGLE ELEMENT from the UI Spec is rendered in the final code. "
+                "Do NOT skip or omit any inputs, buttons, labels, or containers. "
+                "If an element is in the JSON spec, it MUST exist in the generated DOM.\n\n"
+            )
+            
+            # Dynamic layout constraints based on components present
+            layout_constraints = []
+            if any(t.lower() in ["form", "input", "password"] for t in element_types):
+                layout_constraints.append("- FORMS: Use flex-direction: column with an appropriate gap (e.g., 1rem). Ensure inputs are responsive (width: 100%).")
+            if any(t.lower() in ["sidebar", "navigation", "menu"] for t in element_types):
+                layout_constraints.append("- LAYOUT: The page contains a sidebar/menu. Use CSS Grid or Flexbox on the parent container (e.g., grid-template-columns: 250px 1fr) and ensure it stacks vertically on mobile screens.")
+            if any(t.lower() in ["card", "grid"] for t in element_types):
+                layout_constraints.append("- GRID/CARDS: Use CSS Grid (repeat(auto-fit, minmax(300px, 1fr))) or Flex-wrap for cards so they wrap gracefully on smaller screens.")
+            
+            if layout_constraints:
+                dynamic_enforcement += "DYNAMIC ALIGNMENT AND RESPONSIVE RULES:\n" + "\n".join(layout_constraints) + "\n\n"
+
         return (
             f"Framework Target: {fw_label}\n"
             f"CSS Framework/Styling: {css_strategy}\n"
             f"{fw_instruction} for the page spec below. Ensure you use the exact requested CSS framework (e.g. Tailwind utility classes, MUI components, or standard CSS if Separate).\n"
             "If using a component library (like MUI or Bootstrap), add the required dependencies to packageJson.\n\n"
             + tokens_block
+            + dynamic_enforcement
+            + (f"## Strict Layout Specification\nUse this JSON as the SOURCE OF TRUTH for dimensions, bounding boxes, gaps, grids, and padding. DO NOT guess the layout. Rely strictly on these metrics:\n```json\n{json.dumps(layout_spec_dict, indent=2)}\n```\n\n" if layout_spec_dict else "")
             + "## Page Spec\n"
             f"```json\n{json.dumps(slim_page, indent=2)}\n```\n\n"
             "## Story Mappings\n"
             f"{json.dumps(page_mappings)}\n\n"
+            "- ICON RESOLUTION & IMPORT ENGINE: You are responsible for resolving visual icons from the UI spec into native React icon components. "
+            "1. Standard UI Icons (e.g. search, user, bell, settings, trash) MUST be imported exclusively from `lucide-react`. "
+            "2. Brand/Tech Logos (e.g. GitHub, Google) MUST be imported from `react-icons/si`. "
+            "3. Convert all icon names to PascalCase React components (e.g. `RefreshCw`, `SiGoogle`). "
+            "4. Group all icon imports at the top in single destructured statements (e.g. `import { Search, User } from 'lucide-react';`). "
+            "5. All rendered icon components MUST accept dynamic sizing and styling classes. Do NOT fabricate local components or use lowercase tags.\n\n"
             f"Target: {fw_label}. Return ONLY the JSON object (pageId, pageName, route, "
             "componentName, fileName, storyIds, reactContent, cssContent). "
             "In component content: set max-width on the card container to match the image width. "
@@ -426,6 +649,7 @@ class CodeGenerator:
                 react_content = comp.get("codeContent") or comp.get("angularContent") or comp.get("reactContent", "")
                 css_content = comp.get("cssContent", "")
 
+                css_content = self._extract_from_fences(css_content)
                 react_content = self._clean_react_code(react_content, comp_name, ext, is_ts)
                 # Unescape JSON-encoded newlines in both react and css content
                 if "\\n" in react_content:
@@ -478,6 +702,7 @@ class CodeGenerator:
                 react_content = comp_data.get("codeContent") or comp_data.get("angularContent") or comp_data.get("reactContent", "")
                 css_content = comp_data.get("cssContent", "")
 
+                css_content = self._extract_from_fences(css_content)
                 react_content = self._clean_react_code(react_content, sub_comp_name, ext, is_ts)
                 if "\\n" in react_content:
                     react_content = react_content.replace("\\n", "\n")
@@ -542,10 +767,21 @@ class CodeGenerator:
         ]
         save_json({"storyId": story_id, "mappings": mappings}, story_dir / "ui_mapping.json")
 
+    def _extract_from_fences(self, content: str) -> str:
+        """Extracts raw code from markdown fences if the LLM output them."""
+        if not content:
+            return content
+        match = re.search(r'```[a-z]*\n(.*?)```', content, flags=re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return content
+
     def _clean_react_code(self, content: str, comp_name: str, ext: str, is_ts: bool) -> str:
         """Sanitize generated React code: strip non-code preambles, fix export, imports, and JSX/TSX syntax."""
         if not content:
             return content
+            
+        content = self._extract_from_fences(content)
 
         # ── Step 0: Strip non-code preamble the LLM sometimes wraps around code ─
 
@@ -756,23 +992,52 @@ class CodeGenerator:
                     return data
             return data
 
-        # 2. Dual code block parser (Block 1 = JSX/TSX, Block 2 = CSS)
-        code_blocks = re.findall(r"```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)```", raw)
-        if code_blocks:
-            jsx_code = code_blocks[0].strip()
-            css_code = code_blocks[1].strip() if len(code_blocks) >= 2 else ""
-            return {
-                "pages": [
-                    {
-                        "componentName": "App",
-                        "fileName": "App",
-                        "reactContent": jsx_code,
-                        "cssContent": css_code,
-                    }
-                ]
-            }
+        # 3. Code blocks by extension fallback
+        blocks = re.findall(r"```(tsx|jsx|ts|js|css)?\s*([\s\S]*?)```", raw)
+        if blocks:
+            react_content = ""
+            css_content = ""
+            for ext, content in blocks:
+                content = content.strip()
+                if not ext and ("import React" in content or "export default" in content):
+                    ext = "tsx"
+                elif not ext and ("{" in content and ":" in content and ";" in content):
+                    ext = "css"
+                    
+                if ext in ("tsx", "jsx", "ts", "js"):
+                    react_content = content
+                elif ext == "css":
+                    css_content = content
+                    
+            if react_content or css_content:
+                return {
+                    "pages": [
+                        {
+                            "componentName": "App",
+                            "fileName": "App",
+                            "reactContent": react_content,
+                            "cssContent": css_content,
+                        }
+                    ]
+                }
 
-        console.print("[yellow]  Code parse failed.[/yellow]")
+        # 4. Controlled repair attempt via LLM
+        console.print("[yellow]  Code parse failed. Attempting controlled repair...[/yellow]")
+        try:
+            repair_prompt = "The previous response was not valid JSON. Extract the React components from the following text and return ONLY a valid JSON object matching the requested schema.\n\nText:\n" + raw[:3000]
+            repair_raw = self._client.chat(
+                system_prompt="You are a strict JSON formatter. Return ONLY valid JSON.",
+                user_prompt=repair_prompt,
+                model="llama-3.1-8b-instant",
+                max_tokens=2000,
+            )
+            repair_data = parse_json_safe(repair_raw)
+            if repair_data and isinstance(repair_data, dict):
+                return repair_data
+        except Exception as e:
+            console.print(f"[yellow]  Repair attempt failed: {e}[/yellow]")
+
+        console.print("[red]  Code parse completely failed.[/red]")
         return None
 
     def _fallback_scaffold(
@@ -802,7 +1067,7 @@ class CodeGenerator:
                     "componentName": f"{page.page_name.replace(' ', '')}Page",
                     "fileName": f"{page.page_name.replace(' ', '')}Page",
                     "reactContent": self._fallback_page(
-                        f"{page.page_name.replace(' ', '')}Page", {"pageId": page.page_id}
+                        f"{page.page_name.replace(' ', '')}Page", {"pageId": page.page_id, "pageName": page.page_name}, elements_html
                     ),
                     "cssContent": "",
                     "htmlContent": self._fallback_html({"pageName": page.page_name}),
@@ -820,19 +1085,20 @@ class CodeGenerator:
             "tsConfig": self._default_tsconfig() if settings.is_typescript else "",
         }
 
-    def _fallback_page(self, component_name: str, page: Dict[str, Any]) -> str:
+    def _fallback_page(self, component_name: str, page: Dict[str, Any], elements_html: str = "") -> str:
         ext = settings.output_language
         imports = "import React, { useState } from 'react';"
         ts_types = ": React.FC" if ext == "tsx" else ""
+        content = elements_html if elements_html else "      <p>UI generation failed. Wireframe elements missing.</p>"
         return f"""{imports}
 
 const {component_name}{ts_types} = () => {{
   return (
-    <div className="page-container">
-      <h1 data-ui-id="{page.get('pageId', 'PAGE_001')}_TITLE">
+    <div className="page-container flex flex-col gap-4 p-8 items-center w-full">
+      <h1 data-ui-id="{page.get('pageId', 'PAGE_001')}_TITLE" className="text-2xl font-bold mb-4">
         {page.get('pageName', 'Page')}
       </h1>
-      <p>Generated page — UI elements will be populated from ui_spec.json.</p>
+{content}
     </div>
   );
 }};
@@ -1332,7 +1598,7 @@ export default defineConfig({
         def get_relative_import_path(from_path: Path, to_path: Path, is_css: bool = False) -> str:
             # os.path.relpath calculates the relative path from the directory of from_path
             rel = os.path.relpath(to_path, from_path.parent)
-            rel = rel.replace("\\\\", "/")
+            rel = rel.replace("\\", "/")
             if not rel.startswith("."):
                 rel = "./" + rel
             if not is_css:

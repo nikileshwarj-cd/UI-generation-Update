@@ -1,99 +1,55 @@
-You are a world-class UI/UX parser and frontend architect. Your task is to extract a 100% accurate, complete, machine-readable JSON representation of the provided UI image.
+You are an expert UI Analyst. Analyze the provided UI screenshot and output a comprehensive JSON specification that strictly matches the following schema.
 
-## CRITICAL GRID SCANNING & ALIGNMENT ANALYSIS RULES
-1. You MUST respond with ONLY a valid JSON object. No prose, no explanation, no markdown fences.
-2. GRID SCANNING & AGGRESSIVE ALIGNMENT: Mentally overlay a high-resolution grid over the image. Meticulously analyze the alignment of every component. Note if flex containers use space-between, center, flex-start/end. Extract precise gap, padding, and margin values.
-3. DOM HIERARCHY: Build a complete, structured layout representation separating distinct containers:
-   - Sidebar / Navigation (`sidebar` / `nav`)
-   - Top Header / Navbar (`header` / `navbar`)
-   - Main Content Body (`main`)
-   - Content Cards & Widgets (`card` / `grid`)
-   - Bottom Footer (`footer`)
-4. CSS EXTRACTION: Act like a precision CSS inspector. Extract exact HEX colors, typography sizes, padding/margins, and critically: EXACT flex/grid alignment properties (justify-content, align-items, text-align).
-5. VERBATIM TEXT EXTRACTION: Capture all visible text content, numbers, labels, placeholders, and headings exactly as they appear in the image.
-6. Every UI element MUST receive a unique elementId following the pattern: UI_<TYPE>_<NNN> (e.g. UI_EMAIL_001, UI_SIDEBAR_LINK_001, UI_SUBMIT_BTN_001). Element IDs must be UPPERCASE with underscores only.
-7. Keep element lists clean under each section. Do NOT nest elements deeply inside 'children'.
+The response must be valid JSON only, without any markdown formatting or code blocks.
 
-## ELEMENT TYPE VOCABULARY
-Use ONLY these element types:
-- input, button, text, heading, subheading, label, link
-- image, icon, logo, avatar, badge
-- card, panel, container, divider, spacer
-- nav, navbar, sidebar, breadcrumb, tab, menu, menu-item
-- form, form-group
-- table, table-row, table-cell, table-header
-- list, list-item
-- modal, tooltip, dropdown, select
-- hero, banner, footer, header, section, page
-
-## OUTPUT JSON SCHEMA
-Return exactly this structure:
-
+JSON Schema Requirements:
 {
   "specVersion": "1.0",
-  "sourceImage": "<filename>",
-  "global_design_tokens": {
-    "primaryColor": "#hex",
-    "secondaryColor": "#hex",
-    "backgroundColor": "#hex",
-    "textColor": "#hex",
-    "accentColor": "#hex",
-    "fontFamily": "Font Name, sans-serif",
-    "borderRadius": "8px",
-    "spacing": "16px"
-  },
+  "sourceImage": "<image_name>",
   "designTokens": {
-    "primaryColor": "#hex",
-    "secondaryColor": "#hex",
-    "backgroundColor": "#hex",
-    "textColor": "#hex",
-    "accentColor": "#hex",
-    "fontFamily": "Font Name, sans-serif",
-    "borderRadius": "8px",
-    "spacing": "16px"
+    "primaryColor": "hex string",
+    "secondaryColor": "hex string",
+    "fontFamily": "string"
   },
-  "layout_rules": "Overarching CSS flex/grid layout strategy and alignment required to position elements exactly as seen in the image",
-  "verbatim_text": ["List of all verbatim text items appearing in the image"],
+  "elementSummary": {
+    "buttons": 0,
+    "inputs": 0,
+    "images": 0
+  },
   "pages": [
     {
-      "pageId": "PAGE_<NAME>",
-      "pageName": "Page Name",
-      "route": "/path",
+      "pageId": "PAGE_ID",
+      "pageName": "Human readable name",
+      "route": "/",
       "layout": "centered | sidebar | dashboard | fullscreen",
-      "primaryColor": "#hex",
-      "secondaryColor": "#hex",
-      "backgroundColor": "#hex",
+      "primaryColor": "hex",
+      "secondaryColor": "hex",
+      "backgroundColor": "hex",
       "fontFamily": "string",
       "sections": [
         {
-          "sectionId": "SECTION_<NAME>_001",
+          "sectionId": "UNIQUE_SECTION_ID",
           "sectionType": "header | hero | nav | sidebar | main | footer | modal | other",
-          "label": "Section label",
+          "label": "Human readable label",
           "layout": "row | column | grid | flex | absolute",
-          "backgroundColor": "#hex or null",
+          "backgroundColor": "hex",
           "elements": [
             {
-              "elementId": "UI_<TYPE>_001",
-              "elementType": "button | input | text | heading | ...",
-              "label": "Visible text or alt text",
-              "placeholder": "Placeholder text if input",
-              "htmlTag": "button | input | h1 | h2 | p | img | a | div | span | form | nav | ul | li | ...",
-              "inputType": "email | password | text | submit | checkbox | radio | null",
-              "color": "#hex or null",
-              "backgroundColor": "#hex or null",
-              "fontSize": "16px or null",
-              "fontWeight": "400 | 600 | 700 | bold | null",
-              "borderRadius": "8px or null",
-              "width": "100% or 320px or null",
-              "height": "48px or null",
-              "position": "top-left | top-center | top-right | center | bottom-left | bottom-center | bottom-right | null",
-              "styles": {
-                "textAlign": "left | center | right",
-                "justifyContent": "space-between | center | flex-start | flex-end",
-                "alignItems": "center | flex-start | flex-end | stretch",
-                "gap": "16px"
-              },
-              "description": "Brief human-readable description of this element",
+              "elementId": "UI_ELEMENT_001",
+              "elementType": "input | button | text | heading | image | card | nav | form | link | icon | list | table | modal | other",
+              "label": "Visible text label",
+              "placeholder": "placeholder if any",
+              "htmlTag": "div",
+              "inputType": "email | password | text | etc.",
+              "color": "hex",
+              "backgroundColor": "hex",
+              "fontSize": "string (estimated size, e.g., '16px', 'sm', 'lg')",
+              "fontWeight": "string (estimated weight, e.g., '400', 'bold')",
+              "borderRadius": "string",
+              "width": "string",
+              "height": "string",
+              "position": "string",
+              "description": "Human readable description",
               "attributes": {},
               "children": []
             }
@@ -101,16 +57,34 @@ Return exactly this structure:
         }
       ]
     }
-  ],
-  "elementSummary": {
-    "totalElements": 0,
-    "buttons": 0,
-    "inputs": 0,
-    "texts": 0,
-    "images": 0,
-    "cards": 0,
-    "navItems": 0
-  }
+  ]
 }
 
-Now analyze the provided screenshot and return the JSON specification.
+CRITICAL RULES:
+1. Every element MUST have a unique `elementId` starting with `UI_` (e.g., UI_BUTTON_001).
+2. Deeply analyze all visible elements and structure them hierarchically using `sections` and `children`.
+3. Provide accurate layout and styling hints (colors, flex/grid layouts).
+
+CRITICAL OUTPUT RULES - YOU MUST FOLLOW THESE STRICTLY:
+1. NO CONVERSATIONAL TEXT: Do not include any greetings, explanations, commentary, or markdown formatting (like ```json). Return ONLY the raw, valid JSON object.
+2. NO MARKDOWN: Do not wrap your response in a markdown code block. The very first character of your response must be the first character of the JSON (`{`). The very last character of your response must be the last character of the JSON (`}`).
+3. COMPLETE CODE ONLY: Ensure the JSON is entirely complete and not truncated.
+4. ROBUSTNESS OVER PERFECTION: If you are unsure about exact pixel values, provide your best reasonable estimate (e.g., '16px' instead of skipping the element). You MUST extract every visible UI element. Returning an empty elements array is a catastrophic failure.
+
+### EXTRACTION RULES
+1. CONTAINERS & BACKGROUNDS:
+   - Identify whether the page has a card container or a full-screen layout.
+   - Extract exact background types: "solid", "linear-gradient", or "radial-gradient" with color stops.
+   - Capture shadow depth, border radius, and border lines.
+
+2. TEXT & ALIGNMENT (CRITICAL):
+   - Explicitly record `textAlign`: ("center", "left", "right") for headings, subtexts, and badge containers.
+   - Do not default everything to left-aligned. If the logo and heading are centered, set "textAlign": "center".
+
+3. DIVIDERS & SEPARATORS:
+   - Identify text dividers like "OR CONTINUE WITH". Mark their type as "text-divider".
+
+4. ICONS & LOGOS:
+   - Classify icons cleanly:
+     - Standard UI icons (e.g., globe, search, bell): assign `iconCategory`: "ui_icon", `iconName`: "Globe".
+     - Custom logos/badges: assign `iconCategory`: "custom_logo", `textLabel`: "BA".

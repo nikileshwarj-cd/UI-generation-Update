@@ -34,8 +34,9 @@ class UIValidator:
         self.framework = framework
         self._system_prompt = self._load_prompt()
 
-    def _load_prompt(self) -> str:
-        prompt_path = settings.prompts_dir / "ui_validation.txt"
+    def _load_prompt(self, is_complex: bool = False) -> str:
+        prompt_name = "ui_validation_complex.txt" if is_complex else "ui_validation.txt"
+        prompt_path = settings.prompts_dir / prompt_name
         if prompt_path.exists():
             return prompt_path.read_text(encoding="utf-8")
         return (
@@ -50,6 +51,7 @@ class UIValidator:
         output_path: Path,
         ui_spec_path: Optional[Path] = None,
         react_src_dir: Optional[Path] = None,
+        is_complex: bool = False,
         progress_cb: Optional[Callable[[str], None]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -90,14 +92,28 @@ class UIValidator:
         elements_from_spec = []
         if ui_spec_path and ui_spec_path.exists():
             spec = load_json(ui_spec_path)
-            page = spec.get("page", {}) if isinstance(spec, dict) else {}
-            sections = page.get("sections", []) if isinstance(page, dict) else []
-            for sec in sections:
-                for el in sec.get("elements", []):
-                    if isinstance(el, dict):
-                        elements_from_spec.append(el)
+            if not isinstance(spec, dict):
+                spec = {}
+                
+            pages = spec.get("pages", [])
+            if not pages:
+                # Fallback if spec has "page" dict instead of "pages" array
+                page_dict = spec.get("page", spec)
+                pages = [page_dict] if isinstance(page_dict, dict) else []
+                
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                sections = page.get("sections", [])
+                for sec in sections:
+                    if isinstance(sec, dict):
+                        for el in sec.get("elements", []):
+                            if isinstance(el, dict):
+                                elements_from_spec.append(el)
 
         emit(f"Extracted {len(elements_from_spec)} element(s) from UI Spec for validation...")
+        if len(elements_from_spec) == 0:
+            emit("[WARN] 0 elements extracted. The validator may produce inaccurate results.")
 
         # ------------------------------------------------------------------
         # 2. Call LLM Vision for Visual Analysis
@@ -112,10 +128,13 @@ class UIValidator:
             "Return ONLY the valid JSON report matching the format in system prompt."
         )
 
+        # Load correct prompt
+        sys_prompt = self._load_prompt(is_complex=is_complex)
+
         raw_response = ""
         try:
             raw_response = self._client.vision(
-                system_prompt=self._system_prompt,
+                system_prompt=sys_prompt,
                 user_text=user_prompt,
                 image_path=ground_truth_image,
             )
@@ -123,6 +142,22 @@ class UIValidator:
             emit(f"[WARN] Vision validation call encountered issue: {exc}")
 
         report = parse_json_safe(raw_response)
+        
+        if report is None and raw_response.strip():
+            emit("[WARN] Validator vision model returned invalid JSON. Attempting controlled repair...")
+            try:
+                repair_prompt = "The previous response was not valid JSON. Extract the validation report and return ONLY a valid JSON object matching the requested schema.\n\nText:\n" + raw_response[:2000]
+                repair_raw = self._client.chat(
+                    system_prompt="You are a strict JSON formatter. Return ONLY valid JSON.",
+                    user_prompt=repair_prompt,
+                    model="llama-3.1-8b-instant",
+                    max_tokens=2000,
+                )
+                report = parse_json_safe(repair_raw)
+                if report:
+                    emit("  ✓ Successfully repaired validator JSON response!")
+            except Exception as e:
+                emit(f"  [WARN] Repair attempt failed: {e}")
 
         # ------------------------------------------------------------------
         # 3. Structural Code Verification & Fallback Synthesis
