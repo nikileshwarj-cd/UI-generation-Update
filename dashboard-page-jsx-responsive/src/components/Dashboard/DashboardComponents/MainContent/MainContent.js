@@ -1,0 +1,1 @@
+import { useState } from 'react';export function useMainContent() {const [user, setUser] = useState('Alex Johnson');return { user, setUser };};

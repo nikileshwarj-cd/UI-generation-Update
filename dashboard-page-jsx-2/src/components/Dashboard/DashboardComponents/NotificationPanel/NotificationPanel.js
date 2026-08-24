@@ -1,0 +1,1 @@
+import { useState } from 'react'; export function useNotificationPanel() { const [notifications, setNotifications] = useState([{ title: 'New task assigned in 'Product Launch'', count: 1 }, { title: 'New task assigned in 'Product Launch'', count: 1 }]); return { notifications }; }

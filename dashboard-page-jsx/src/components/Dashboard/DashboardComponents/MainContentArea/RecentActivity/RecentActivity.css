@@ -1,0 +1,16 @@
+.recent-activity {
+  background-color: var(--card-surface);
+  padding: 20px;
+  border: 1px solid var(--border-color);
+}
+.recent-activity h2 {
+  color: var(--text-main);
+}
+.recent-activity ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.recent-activity li {
+  margin-bottom: 10px;
+}

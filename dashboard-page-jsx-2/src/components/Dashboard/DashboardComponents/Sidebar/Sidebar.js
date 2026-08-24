@@ -1,0 +1,1 @@
+import { useState } from 'react'; export function useSidebar() { const [activeLink, setActiveLink] = useState('Dashboard'); return { activeLink }; }

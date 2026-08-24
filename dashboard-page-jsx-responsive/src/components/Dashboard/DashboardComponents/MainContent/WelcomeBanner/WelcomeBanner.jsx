@@ -1,0 +1,1 @@
+import React from 'react';function WelcomeBanner() {return (<div className="bg-yellow-100 p-4"><h1 className="text-3xl">Hello, Alex Johnson! Welcome back to your dashboard.</h1></div>);};export default WelcomeBanner;

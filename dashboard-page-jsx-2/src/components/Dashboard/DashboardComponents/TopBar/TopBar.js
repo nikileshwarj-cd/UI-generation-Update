@@ -1,0 +1,1 @@
+import { useState } from 'react'; export function useTopBar() { const [user, setUser] = useState({ name: 'Alex Johnson' }); return { user }; }

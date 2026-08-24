@@ -1,0 +1,1 @@
+import { useState } from 'react'; export function useBrandHeader() { const [logo, setLogo] = useState('Innovate Solutions Inc.'); return { logo }; }

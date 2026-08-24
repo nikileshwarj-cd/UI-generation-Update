@@ -1,0 +1,1 @@
+import React from 'react';function BrandHeader() {return (<div className="bg-blue-500 text-white p-4"><h1 className="text-3xl">Innovate Solutions Inc.</h1></div>);};export default BrandHeader;

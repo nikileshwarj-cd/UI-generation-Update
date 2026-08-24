@@ -1,0 +1,23 @@
+.main-content-area {
+  padding: 20px;
+}
+.main-content-area .welcome-banner {
+  background-color: var(--card-surface);
+  padding: 20px;
+  border: 1px solid var(--border-color);
+}
+.main-content-area .stats-cards {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.main-content-area .recent-activity {
+  background-color: var(--card-surface);
+  padding: 20px;
+  border: 1px solid var(--border-color);
+}
+.main-content-area .notifications-panel {
+  background-color: var(--card-surface);
+  padding: 20px;
+  border: 1px solid var(--border-color);
+}

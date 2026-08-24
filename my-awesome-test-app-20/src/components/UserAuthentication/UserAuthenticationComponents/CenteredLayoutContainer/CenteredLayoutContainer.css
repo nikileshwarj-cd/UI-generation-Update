@@ -1,0 +1,8 @@
+.centered-layout-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  width: 100%;
+  background-color: var(--bg-primary, #1E293B);
+}

@@ -1,0 +1,1 @@
+import { useState, useEffect } from 'react'; export function useDashboardPage() { const [user, setUser] = useState({ name: 'Alex Johnson' }); useEffect(() => { // fetch user data }, []); return { user }; }

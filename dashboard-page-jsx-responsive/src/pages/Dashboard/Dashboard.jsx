@@ -1,0 +1,1 @@
+import React from 'react';import { BrandHeader, Sidebar, MainContent } from '../../components/Dashboard/DashboardComponents';function Dashboard() {return (<div className="flex h-screen"><BrandHeader /><Sidebar /><MainContent /></div>);};export default Dashboard;

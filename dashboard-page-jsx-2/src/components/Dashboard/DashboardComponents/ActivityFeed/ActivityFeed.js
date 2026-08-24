@@ -1,0 +1,1 @@
+import { useState } from 'react'; export function useActivityFeed() { const [activities, setActivities] = useState([{ title: 'Project 'Marketing Campaign' Created', timestamp: '2 mins ago' }, { title: 'Task 'API Integration' Completed', timestamp: '1 hr ago' }, { title: 'Notification Received', timestamp: '3 hrs ago' }]); return { activities }; }

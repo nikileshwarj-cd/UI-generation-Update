@@ -1,0 +1,1 @@
+// No custom hook or logic needed for this component

@@ -1,0 +1,7 @@
+{
+    "id": "c8b82902-276f-4fa0-bcee-fceaf686040a",
+    "name": "My Awesome Test App! 2.0",
+    "sanitized_name": "my-awesome-test-app-20",
+    "framework": "react-ts",
+    "css_framework": "tailwind"
+}

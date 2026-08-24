@@ -1,0 +1,1 @@
+import { useState } from 'react';export function useWelcomeBanner() {const [message, setMessage] = useState('Hello, Alex Johnson! Welcome back to your dashboard.');return { message, setMessage };};

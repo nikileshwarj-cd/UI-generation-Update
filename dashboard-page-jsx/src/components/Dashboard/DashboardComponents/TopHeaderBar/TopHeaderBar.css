@@ -1,0 +1,17 @@
+.top-header-bar {
+  background-color: var(--card-surface);
+  border-bottom: 1px solid var(--border-color);
+}
+.top-header-bar h2 {
+  color: var(--text-main);
+}
+.top-header-bar button {
+  background-color: var(--input-bg);
+  border: none;
+  padding: 10px 20px;
+  font-size: 16px;
+  cursor: pointer;
+}
+.top-header-bar button:hover {
+  background-color: var(--button-hover);
+}

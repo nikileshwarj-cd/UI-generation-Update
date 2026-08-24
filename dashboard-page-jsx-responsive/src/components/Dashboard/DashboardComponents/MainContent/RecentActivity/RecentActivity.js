@@ -1,0 +1,1 @@
+import { useState } from 'react';export function useRecentActivity() {const [activities, setActivities] = useState([{message: 'Project 'Marketing Campaign' Created', time: '2 mins ago'}, {message: 'Task 'API Integration' Completed', time: '1 hr ago'}, {message: 'Notification Received', time: '3 hrs ago'}]);return { activities, setActivities };};

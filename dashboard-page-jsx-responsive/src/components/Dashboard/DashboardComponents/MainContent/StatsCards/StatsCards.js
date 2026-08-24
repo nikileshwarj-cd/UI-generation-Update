@@ -1,0 +1,1 @@
+import { useState } from 'react';export function useStatsCards() {const [stats, setStats] = useState({totalProjects: 12, pendingTasks: 5, completedTasks: 38, notifications: 3});return { stats, setStats };};

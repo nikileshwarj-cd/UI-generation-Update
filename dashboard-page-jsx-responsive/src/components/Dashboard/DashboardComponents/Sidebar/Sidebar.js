@@ -1,0 +1,1 @@
+import { useState } from 'react';export function useSidebar() {const [active, setActive] = useState('Dashboard');return { active, setActive };};

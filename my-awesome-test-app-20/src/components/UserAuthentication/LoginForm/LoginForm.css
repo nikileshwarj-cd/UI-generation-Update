@@ -1,0 +1,24 @@
+.login-form {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  padding: 32px;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+}
+.login-form input {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border-color);
+}
+.login-form button {
+  background: var(--button-bg);
+  color: var(--text-primary);
+  padding: 12px 24px;
+  border: none;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+}
+.login-form button:hover {
+  background: var(--button-hover);
+}

@@ -1,0 +1,1 @@
+import React from 'react';import WelcomeBanner from './WelcomeBanner';import StatsCards from './StatsCards';import RecentActivity from './RecentActivity';function MainContent() {return (<div className="p-4"><WelcomeBanner /><StatsCards /><RecentActivity /></div>);};export default MainContent;

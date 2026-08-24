@@ -1,0 +1,6 @@
+.brand-header {
+  background: transparent;
+  color: var(--text-primary);
+  padding: 16px 0;
+  text-align: center;
+}

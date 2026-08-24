@@ -1,0 +1,1 @@
+import { useState } from 'react';export function useBrandHeader() {const [title, setTitle] = useState('Innovate Solutions Inc.');return { title, setTitle };};

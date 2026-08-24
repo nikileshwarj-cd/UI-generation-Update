@@ -1,0 +1,1 @@
+import React from 'react';import { Dashboard, Projects, Tasks, Notifications, Reports } from './SidebarItems';function Sidebar() {return (<div className="bg-gray-800 text-white p-4 h-screen"><Dashboard /><Projects /><Tasks /><Notifications /><Reports /></div>);};export default Sidebar;

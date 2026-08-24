@@ -1,0 +1,6 @@
+.action-footer {
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 16px 0;
+  text-align: center;
+}
